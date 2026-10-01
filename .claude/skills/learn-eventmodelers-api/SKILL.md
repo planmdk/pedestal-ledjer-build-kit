@@ -1,0 +1,1100 @@
+---
+name: learn-eventmodelers-api
+description: Teaches an agent everything about the eventmodelers platform API — all endpoints, their purpose, request payloads, response shapes, authentication, and element types.
+---
+
+# Eventmodelers Platform API Reference
+
+You now have complete knowledge of the eventmodelers platform API. This is a reference for *how a skill talks to the platform once you're already executing one* — it is not a license to call the API directly instead of invoking the skill that matches the user's intent (see the Skill Selection table in `CLAUDE.md`). If a prompt matches a row in that table, invoke that skill first and let it decide which endpoint/tool to call; only reach for this reference directly when no skill matches the intent at all, or when you're implementing/debugging a skill itself.
+
+**Load this once per session, on demand — not as a mandatory preamble.** Every other skill already documents the exact API calls it needs inline; none of them require this full reference to be loaded before they can run. Reach for this skill only when you hit a specific endpoint, field, or element type that a skill's own instructions don't cover, and don't reload it again later in the same session once you have.
+
+**Two transports exist for board operations: MCP tools (preferred) and raw REST/curl (fallback).** The `connect` skill registers the MCP server in `.mcp.json`. Once `mcp__eventmodelers__*` tools are visible in your tool list, use them — they need no `x-token`/`x-user-id` headers (auth and org resolution happen server-side from the registered token) and return the same data as the REST endpoints below. Fall back to the numbered REST sections only when MCP tools aren't connected yet, or for the handful of endpoints (prompts lifecycle, snapshots, user management, board/extension CRUD) the MCP server intentionally doesn't expose — it only covers board-content operations (nodes, timelines, slices, comments, screens). This preference is about *which transport a skill's own instructions should use*, never about whether to invoke the skill in the first place.
+
+---
+
+## MCP Tool Catalog (Preferred)
+
+Server name: `eventmodelers`. Every tool takes `boardId` explicitly; none need `orgId` (resolved from the token) or `x-user-id` (the server attributes writes to the authenticated principal). REST section numbers below give the underlying implementation for tools that wrap a single endpoint 1:1.
+
+Write tools take their items as an array (`nodeIds[]`, `elements[]`, `connections[]`, …) and there are no separate plural tools — put several items in one call rather than looping. The array form always answers `{results: [...]}`, one entry per item in request order, even for a single item. The older flat form (e.g. `delete_node { nodeId }`) still works and answers with just that one result, but use the array form in new instructions.
+
+**Every write tool also takes an optional `sessionId`** — the chat session the change is made for (`CHAT_SESSION_ID`: a prompt turn's `origin_session_id`). Pass it on every write while working a prompt that came from a chat; the server stores it on each board event the call writes (`session_id`), so the board's history traces the change back to that conversation. Omit it otherwise. Only an active session of the same board is stored — anything else is dropped and the write goes ahead without it. It is not in the per-tool Args below, to keep them short.
+
+**Deprecated tools — don't call them:** `drop_node_to_cell` and `move_node_in_timeline` → `place_element` with `action: "move"` (`nodeId` + `cellName`); `clear_cell` → `place_element` with `action: "clear"` (`nodeId`, or `cellName`). They still work so older kits don't break, but they will be removed.
+
+| Tool | Args | Purpose | REST equivalent |
+|---|---|---|---|
+| `list_boards` | — | List boards for the org | §1 `GET /api/boards` (org-scoped) |
+| `get_nodes` | `boardId`, `type?`, `name?`, `chapterId?`, `nodeIds?`, `projection?` (`"line"`) | List nodes, optionally by type and/or a partial case-insensitive title match. **Unscoped with full `meta` it is expensive** — about 2 KB per node, ~1 MB on a 500-node board — so always pass a filter or `projection: "line"`. `chapterId` scopes to one timeline — prefer this over an unscoped board-wide call whenever the step is working within one chapter (the common case); `nodeIds` fetches a known, scattered subset in one call (e.g. re-verifying exactly the nodes just touched by a batch write) instead of a full `type` refetch; `projection: "line"` maps each match to `{id, type, title, fields}` — `fields` being just the attribute names. No `cellName` — an existing node is addressed by its `id`; when a cell address is needed (placing into a cell), read it from `get_board_outline`. No `sliceStatus` — take it per column from `get_board_outline` | §3 `GET .../nodes` (REST records carry no `cellName`, `projection=line` included) |
+| `get_node` | `boardId`, `nodeId`, `projection?` (`"cells"` \| `"edges"`) | Get one node (no `cellName` — address it by `nodeId`; cell addresses come only from `get_board_outline`). `projection: "cells"` (CHAPTER nodes only) returns just `{rows, columns, cells}` instead of the full `timelineData` — use whenever only the grid/occupancy is needed, not the whole chapter; `projection: "edges"` returns just that node's inbound/outbound connections instead of `findNodeById`'s full record. Both are opt-in — omitting `projection` is the unchanged full response. An unknown id is a `NODE_NOT_FOUND` error | §3 `GET .../nodes/:nodeId` (REST returns the node as stored, without `cellName`; `404` carries `code: 'NODE_NOT_FOUND'`) |
+| `get_node_comments` | `boardId`, `nodeId` | List comments on a node | §1 `GET .../nodes/:nodeId/comments` |
+| `get_board_events` | `boardId`, `since?`, `seq?` | A page of at most 300 board events, oldest first, as `{events, pageSize, hasMore}`. Not the whole log: while `hasMore` is true, page on by passing the last event's `seq` as `since`. `seq` returns only the event of exactly that seq | §1 `GET .../events` |
+| `submit_node_events` | `boardId`, `events[]`, `autoConnect?`, `compact?` | Create/update nodes (raw `NodeChangeEvent`/edge events). Every event property is described on the tool's own `events[]` schema — read that rather than this skill when all you need is the event shape. An event needs its own `id` (required — a fresh uuid per event, never the node id) and its `eventType`, plus the keys of its kind (`nodeId`/`meta`/`node`, or `edgeId`/`source`/`target`). The `id` keys the returned `hashes` map and makes a resubmit idempotent — the same event sent twice under one id writes a single board event. Don't send `boardId` or `timestamp` per event — the server takes the board from the call and stamps the time itself, and ignores both if sent. `autoConnect: false` places freshly-created nodes without wiring them to their own/previous-column neighbors (avoids a stray nearest-left edge); `compact: true` returns `{persisted: <count>}` instead of the per-node hash map | §3 `POST .../nodes/events` |
+| `delete_node` | `boardId`, `nodeIds[]` | Delete nodes, applied in order — one failure doesn't stop the rest; answers `{results}`. Deleting a chapter (timeline) cascades — every node placed in one of its cells, plus any node parented to it (e.g. SLICE_BORDER), is deleted too, along with all their edges | (via `node:deleted` event, §3) |
+| `create_drawing` | `boardId`, `drawings[]` (each `kind`, `x`, `y`, `width`, `height`, ...) | Freehand canvas annotation (path/rect/text/sticky) — never placed in a cell. An annotation is rarely one stroke: an arrow plus its label is one call with several `drawings` entries, applied in order, not several calls. **"Hotspot"** means a red feedback note: `kind: "sticky"` with `fill: "#ef4444"` (a sticky with no `fill` renders yellow), `content` = the problem/question, placed right next to the element it concerns | — (REST `POST .../drawing/draw` accepts a single drawing or an array) |
+| `create_chapter` | `boardId`, `x?`, `y?`, `title?`, `columns?`, `lanes?: [{type, label?, height?}]` | Create a timeline. Omitting `x`/`y` auto-stacks it below the lowest existing chapter (by its *actual current* row-height total, not the height it was created with — safe even after `add_lane` growth), plus a fixed margin. Pass `title` to name it, `columns` for a known column count, and `lanes` to create named lanes (or several of one type, e.g. one swimlane per context) — none of the three needs a follow-up call, and the lanes are sorted into the required order automatically. The response carries every `columnId` and lane id, so the chapter needn't be read back before placing into it | §2 `POST .../chapters` |
+| `get_chapter_bounds` | `boardId` | Absolute canvas bounding box `{id, title, x, y, width, height}` of every chapter on the board — width/height derived from each chapter's current row/column layout, not a guessed default. Use before picking explicit `x`/`y` for `create_chapter` (e.g. placing below the chapter with the largest `y + height`) to avoid overlapping one that grew since it was created | §2 `GET .../chapters/bounds` |
+| `add_column` | `boardId`, `timelineId`, `index?`, `beforeNodeId?`, `afterNodeId?`, `count?` | Add one or more columns in one call. `count` inserts that many contiguously starting at the insertion point (default 1). Position with at most one of `index` (0-based), `beforeNodeId`, or `afterNodeId` (resolves the index from where that already-placed node currently sits) — omit all three to append | §2 `POST .../timelines/:id/columns` |
+| `delete_column` | `boardId`, `timelineId`, `columnIds[]` | Delete columns, applied in order — the "cannot delete the last column" rule is checked after each deletion; answers `{results}` | §2 `DELETE .../columns/:columnId` |
+| `add_lane` | `boardId`, `timelineId`, `lanes[]` (each `type`, `label?`, `index?`, `height?`) | Add lanes/rows, applied in order — each `index` resolves against the grid the previous entry left; answers `{results}`. For a chapter that doesn't exist yet, pass `lanes` to `create_chapter` instead — that needs no lane call at all | §2 `POST .../timelines/:id/lanes` (accepts an array too) |
+| `remove_lane` | `boardId`, `timelineId`, `rowId` | Remove a lane | — (extends §2; no direct REST route) |
+| `move_timeline_structure` | `boardId`, `timelineId`, `kind` (`'column'\|'lane'`), `id`, `toIndex` | Reorder a column or lane (row) — `kind` picks which `id` refers to | — (MCP-only convenience) |
+| `move_timeline_position` | `boardId`, `timelineId`, `x`, `y` | Move a chapter node on canvas | — (MCP-only convenience) |
+| `create_slice` | `boardId`, `timelineId`, `type`, `index?`, `nodes?: {actor?, interaction?, swimlane?}` (each `{rowId?, title?, fields?}`), `status?` | Create a full slice (column + nodes + SLICE_BORDER). `rowId` targets a specific lane when the chapter has more than one lane of that type (e.g. several actor lanes); omit to use the first matching lane. `fields` writes that node's attributes in the same call, and `status` gives the SLICE_BORDER its `sliceStatus` on creation — neither needs a follow-up write | §5 `POST .../slices` |
+| `create_slice_definition` | `boardId`, `timelineId`, `slices[]` (each `columnId`, `title`, `status?`, `data?`, `meta?`) | Create SLICE_BORDERs over existing columns, one per entry, applied in order; answers `{results}`. `status` sets its `sliceStatus` straight away instead of a follow-up `update_slice_status` | §5 `POST .../slice-definitions` |
+| `place_element` | `boardId`, `timelineId`, `elements[]` (each `action?` = `create` (default) with `elementType`, `title`, `fields?`, `lane?`, `columnIndex?`, `autoConnect?` · `move` with `nodeId` + target `cellName` · `clear` with `nodeId` (preferred for an existing node) or `cellName`), `compact?` | Find/create an empty cell in the right lane and place a COMMAND/READMODEL/EVENT/AUTOMATION/MARKDOWN/TABLE. `action: "move"` puts an existing node of any type into that (empty) cell, moving it if it already sits elsewhere on the timeline; `action: "clear"` unplaces a node without deleting it (`delete_node` deletes) — pass its `nodeId` to empty the cell it sits in, or a `cellName`. These replace `drop_node_to_cell`, `move_node_in_timeline` and `clear_cell`, which still exist but are deprecated — don't use them. `fields` writes the element's attributes in the same call — don't follow a placement with a `submit_node_events` just to set them. A whole slice's or column run's worth goes in one call, applied in order so each entry sees the columns the previous one added; answers `{results}` (`compact: true` → `{nodeId, cellName, columnIndex}` per entry). `autoConnect: false` places without wiring to timeline neighbors — wire the edges yourself | — (MCP-only convenience; composes §2+§3) |
+| `list_slices` | `boardId`, `contextName?` | List slices (id, title, status). `contextName` restricts to one MODEL_CONTEXT (or timeline) — an unknown name is a `CONTEXT_NOT_FOUND` error, not an empty list | §8 `GET .../slicedata/slices` |
+| `get_slice_rework` | `boardId`, `contextId` | How much each slice of one context has been reworked: changes, steps backwards, and reopens after Done, most reworked first, plus planning metrics over them. `contextId` is a MODEL_CONTEXT or a timeline (a timeline resolves to the context it belongs to). Always per context — there is no board-wide form | §8 `GET .../reporting/rework/contexts/:contextId` |
+| `update_slice_status` | `boardId`, `newStatus`, plus exactly one of `sliceId` / `sliceTitle` | Change a SLICE_BORDER's `sliceStatus`. With a title there is no need to call `list_slices` first; an ambiguous title comes back with its candidates. A slice being created takes its status from `create_slice`/`create_slice_definition` instead | — (via `node:changed` event, §3) |
+| `get_slice_data` | `boardId`, `contextName?`, `contextId?`, `sliceId?`, `projection?` (`"outline"` \| `"fields"` \| `"specs"`), `format?` | Full element graph for slices in a context. `projection` trims it first: `outline` = slice header + each element as `{id, title, type}`; `fields` = elements with fields and dependencies, no specs/comments/prompts; `specs` = specifications and storylines, no elements — prefer one over the full graph when only part is needed. `outline`/`specs` encode only as `json`, `yaml` or `toon` (other formats are a `PROJECTION_FORMAT_UNSUPPORTED` error); an unknown `sliceId` is `SLICE_NOT_FOUND` | §8 `GET /slicedata` |
+| `get_spec_info` | `boardId`, `timelineId`, `elementTypes?` | EVENT/COMMAND/READMODEL nodes valid in GWT steps. Pass `elementTypes` (subset of `EVENT`/`COMMAND`/`READMODEL`) to avoid pulling the full element list when only one or two types are needed — filtered server-side, not just after a full fetch | §6 `GET .../spec-info` |
+| `get_board_outline` | `boardId`, `chapterId` | One chapter's structure, compact: per-column node lists (`{id, type, title, lane, cellName}`) + a flat edge list, no HTML pages / field bodies / meta. `cellName` is each node's real cell address (column letter + row number) — the only read that returns cell names at all; use it when a placement needs a cell address. For an empty target cell, take the column's `letter` plus the lane's 1-based position in the outline's `lanes` list (e.g. `letter: "C"`, second lane → `C2`) — never convert array indexes yourself. The cheap "what is where and how is it wired" read — prefer over `get_nodes` (no projection) for orientation checks | — (MCP-only convenience) |
+| `get_connected_nodes` | `boardId`, `nodeId`, `chapterId?`, `direction?` (`inbound`/`outbound`/`both`), `depth?`, `types?`, `includeFields?` | Neighbours of **one** node — what feeds it and what it feeds. Answers from a single anchor, unlike `get_attribute_chain` (which needs both ends of the chain up front). `depth` follows a whole chain; `types` filters the result only, never the traversal. Each neighbour carries `via`: `"edge"` for a real connection, `"layout"` when the node has none in that direction and the neighbour was inferred from the grid using auto-connect's own window (own column + adjacent one, forward-only pairs). Real edges always win. The `layout` fallback is what makes hand-built/imported chapters — which routinely carry **zero** edges — readable instead of falsely empty | — (MCP-only convenience) |
+| `validate_model` | `boardId`, `chapterId`, `checks?[]` | Server-side Event Modeling structural checklist over one chapter — compact `findings` only. Checks: unplaced nodes, backward arrows (with the todo-list `EVENT→READMODEL` exception), zero/multi-issuer commands, sourceless read models, two-screens-in-a-column, missing scenarios. Replaces the manual per-type `get_nodes` + `get_node projection=edges` validation pass | — (MCP-only convenience) |
+| `add_scenario` | `boardId`, `timelineId`, `columnId`, `scenarios[]`, `compact?` | Append GWT scenario(s) to a column's spec node — created automatically, and a scenario `id` is generated when omitted. A given/when/then step may be addressed by `{title, type}` instead of a node id, resolved against that timeline, so no `get_spec_info` call is needed first (an ambiguous title is reported with its candidates). `compact: true` returns `{specNodeId, added, scenarioCount, isNewNode}` instead of echoing every scenario back | §6 `POST .../scenarios` |
+| `add_storyline` | `boardId`, `timelineId`, `columnId`, `storylines[]`, `compact?` | Append storyline(s) (ordered, branchable beats over existing elements) to a column's spec node. Use whenever `eventmodeling-elaborating-scenarios`'s GWT-vs-storyline decision rule calls for one (e.g. a todo list's open→close lifecycle) — not only when a user explicitly names "storyline"; that skill's own per-read-model judgment is the trigger, this catalog entry isn't a stricter gate on top of it. `compact: true` suppresses the full storyline echo | §6 `POST .../storylines` |
+| `set_connection` | `boardId`, `connections[]` (each `source`, `target`, `action` `'connect'\|'remove'`), `compact?` | Add or remove type-checked directed edges, applied in order (a later entry can rely on an earlier edge); answers `{results}`, or with `compact: true` a `{connected, existed, removed, notFound, failed, errors}` tally | — (via `edges` on §3 events) |
+| `auto_connect_node` | `boardId`, `nodeIds[]` | Re-run auto-connect for nodes — incompatible neighbours come back in `skipped`, not as an error; answers `{results}` | §3 `POST .../nodes/:nodeId/auto-connect` |
+| `link_element` | `boardId`, `nodeId`, plus either `targetNodeId` or `timelineId` (+ `columnIndex?`, `lane?`) | Turn a node into a linked copy of `nodeId` — it receives a full copy of that node's meta plus `meta.linkedTo`. Name an existing `targetNodeId`, or pass `timelineId` to have the copy placed and linked in this one call (inheriting the original's type and title), which is what a translation or automation chain wants | §3 `POST .../nodes/:nodeId/link` |
+| `add_comment` | `boardId`, `comments[]` (each `nodeId`, `text`, `type?` `'COMMENT'\|'TASK'\|'QUESTION'`, `author?`) | Add comments on any nodes of one board — `QUESTION` is the type for a gap/edge case raised during review, and a review posts all its questions in one call; answers `{results}` in request order | §1 `POST .../boards/:boardId/comments` (batch) |
+| `update_comment` | `boardId`, `nodeId`, `commentId`, `action` (`'resolve'\|'delete'`) | Resolve or delete a comment | — (via comment events) |
+| `create_screen` | `boardId`, `screens[]` (each `contentType` `'image'\|'sketch'\|'html'`, `chapterId`, `cellName` (required), `nodeId?`, content fields `imageBase64`/`mimeType`, `elements[]`, or `pages[]`/`backgroundColor`, `title?`, `description?`, `fields?`), `autoConnect?` | Create + place new screen nodes (SCREEN or HTML_SCREEN) with their content, in one call; each HTML page at most 6000 characters (`HTML_SCREEN_PAGE_TOO_LONG` otherwise); entries applied in order, one failure doesn't stop the rest; answers `{results}`. `title` names the node (`meta.title`) in the same call — no follow-up `node:changed` just to label the screen. `autoConnect: false` places without wiring to timeline neighbors | §4 `POST .../images/:id/sketch` + `image-nodes` |
+| `render_screen` | `boardId`, `nodeId`, `elements[]?` (SCREEN) or `pages[]?`+`backgroundColor?` (HTML_SCREEN), `description?` | Update an existing screen's content — exactly one of `elements`/`pages`; each HTML page at most 6000 characters (`HTML_SCREEN_PAGE_TOO_LONG` otherwise) | §4 `POST .../images/:id/sketch` + `image-nodes` |
+| `get_attribute_chain` | `boardId`, `timelineId`, `targetNodeId`, `sourceNodeId` | Resolve every node in the columns between two placed nodes (inclusive), ordered target→source (top-to-bottom within a column), each `{id, type, title, cellName, fields}`. A node not placed in that timeline is a `NODE_NOT_IN_TIMELINE` error | — (MCP-only convenience) |
+| `get_image_snapshot_description` | `boardId`, `nodeId` | Load the `{elements:[...]}` sketch description from storage | — (reads what §4 sketch endpoints write) |
+| `validate_slice_data` | `sliceData` | Offline validation of a `SliceDataOutput` payload — no board access | — (MCP-only, pure function) |
+| `commit_board_to_git` | `boardId` | Force a git-extension commit/push, bypassing the autoCommit gate | — (MCP-only; git extension) |
+| `update_prompt_status` | `promptId`, `newStatus`, `comment?` | Update a prompt's lifecycle status (`ADDED`/`CLAIMED`/`IN_PROGRESS`/`DONE`), optionally with a progress comment. Not board-scoped — no `boardId` arg; the prompt's board is resolved server-side. | §14 `POST .../prompts/:id/status` |
+
+**Not exposed via MCP at all** — always use REST/curl for these: §7 Config Import, §10 Snapshots, §11–12 Invitations, §13 Utility (`/api/user`, swagger), and the rest of §14 Prompts (submission, claiming, deletion, realtime-token) — only the status-update endpoint has an MCP tool (`update_prompt_status`, used by the `update-prompt-status` skill); everything else in Prompts is an intentionally separate lifecycle the board-content MCP server doesn't otherwise own.
+
+**Capabilities with no direct MCP filter** — e.g. REST's `GET .../nodes?cellId=<id>&timelineId=<id>` and `?colId=<id>&timelineId=<id>` (§3) have no equivalent params on `get_nodes`. Either call the REST endpoint directly, or get the same answer by calling `get_node` on the CHAPTER with `projection: "cells"` and reading `cells` (sparse array; a cell absent from it is empty) instead of asking the server to filter by cell/column.
+
+### Which read to use
+
+Pick the cheapest read that answers the step's question, and name the reason in one short clause next to the call:
+
+| The step needs | Read |
+|---|---|
+| ids, titles, types, attribute names only (existence check, dedupe by title, pick a chapter/context, find a node by name, count elements) | `get_nodes` with `projection: "line"` |
+| a chapter's grid / cell occupancy | `get_node { nodeId: <chapterId>, projection: "cells" }` |
+| one node's connections | `get_node { nodeId, projection: "edges" }` |
+| what is where in a chapter (incl. cell names for placement), plus `sliceStatus` per column | `get_board_outline` |
+| field types, examples, descriptions, positions, HTML | full `get_nodes`, scoped by `chapterId` or `nodeIds` — never board-wide when avoidable |
+| finding slices / their elements / element counts | `get_slice_data` with `projection: "outline"` (format `json`/`yaml`/`toon`) |
+| attribute, field-flow or completeness work | `get_slice_data` with `projection: "fields"` |
+| scenario / spec review, spec coverage | `get_slice_data` with `projection: "specs"` (format `json`/`yaml`/`toon`) |
+| elements **and** specs **and** comments/prompts together (e.g. a business review) | full `get_slice_data` — say why |
+
+Two cheap projected calls (e.g. `outline` + `specs`) beat one full call when the step doesn't need comments, prompts or field bodies. `projection: "line"` never carries `sliceStatus`, `meta`, positions, field types or examples — if a later step reads any of those, use the full read. `get_nodes { type: "CHAPTER" }` without a projection returns every chapter's full grid; to just list or pick chapters, add `projection: "line"`.
+
+---
+
+## Architecture Overview
+
+- **Framework**: Express.js + `@event-driven-io/emmett` (event sourcing)
+- **Adapter**: `@event-driven-io/emmett-expressjs`
+- **Database**: PostgreSQL via Knex
+- **Storage / Auth**: Supabase
+- **Route discovery**: Dynamic glob (`**/routes{,-*}.js`) loaded from `dist/src/slices`
+- **Base URL** (local): `http://localhost:3000`
+
+---
+
+## Authentication & Headers
+
+| Header | Required | Purpose |
+|---|---|---|
+| `Authorization` | Some routes | Supabase JWT bearer token |
+| `x-user-id` | Node operations | User identifier |
+| `x-agent-id` | Optional | The agent process making the call — the uuid it also sends as `agent_id` on its heartbeat (`$EVENTMODELERS_AGENT_ID`, resolved by the `connect` skill). Stored on the `board_events` rows a write produces and broadcast with them, so the board shows *which* agent touched an element instead of one anonymous agent for all of them, and it decides who may claim a prompt addressed to a preferred agent. Send it on every call; a value that isn't uuid-shaped is ignored. |
+| `x-chat-session-id` | Optional | The chat session the change is made for (`CHAT_SESSION_ID` — a prompt turn's `origin_session_id`). Send it on every **write** under `/api/org/:orgId/boards/:boardId/...` while working a prompt that came from a chat; omit it otherwise. Stored as `session_id` on every board event the write produces, so the board's history traces the change back to that conversation. Agents only — ignored on a browser login. Only an active session of the call's own board is stored; anything else (not a uuid, unknown, deleted, another board's) is dropped and the write goes ahead without it. MCP tools take it as their `sessionId` argument instead. |
+| `x-causation-id` | Optional | Event causation tracing |
+| `x-correlation-id` | Optional | Correlation tracing |
+
+- CORS allowed origins: `localhost:3000`, `localhost:3001`, `https://app.eventmodelers.ai`
+
+---
+
+## Element Types
+
+```typescript
+MODEL_CONTEXT  // Context/domain modeling container
+CHAPTER        // Timeline/sequence container — a "chapter" IS a timeline (chapterId === timelineId); the terms are used interchangeably across the API
+ACTOR          // System participant (swimlane label)
+AUTOMATION     // Automated action
+SCREEN         // UI screen
+COMMAND        // State-changing operation
+EVENT          // Domain event
+SPEC_ERROR     // Error scenario
+TABLE          // Data table
+READMODEL      // Query result / materialized view
+SCENARIO       // GWT scenario
+LANE           // Timeline row
+SLICE_BORDER   // Slice boundary marker
+MARKDOWN       // Free-text markdown note — the content type a `feedback` lane accepts (see §2)
+VIDEO          // Embedded video (YouTube/Loom link in `data.url`). API/MCP-only — no palette button in
+               // the UI, but renders on the board like any other node. Free-floating: create it via
+               // `submit_node_events` with a position and no chapterId/cellId, same as a drawing.
+```
+
+---
+
+## Field Types
+
+Every field on a `COMMAND`, `EVENT`, `READMODEL`, `SCREEN`, or `TABLE` element (`meta.fields[]`) has a `type` from this exact set — the canonical source is the [event-modeling-spec schema](https://github.com/dilgerma/event-modeling-spec/blob/main/eventmodeling.schema.json) (`$defs.Field.properties.type`):
+
+```typescript
+String     // text
+Boolean    // true / false
+Int        // 32-bit integer
+Long       // 64-bit integer
+Double     // floating-point number
+Decimal    // precise fixed-point number — prefer this over Double for money/currency
+Date       // calendar date only, no time component (e.g. "2026-06-01")
+DateTime   // date + time, ISO 8601 (e.g. "2026-06-01T09:00:00Z")
+UUID       // universally unique identifier
+Custom     // structured/nested value — use with `subfields` or `schema`
+```
+
+Other `Field` properties: `name`, `example`, `subfields[]` (nested `Field`s), `mapping`, `optional`, `technicalAttribute`, `generated`, `idAttribute`, `pii`, `schema`, `cardinality` (`"List"` | `"Single"`).
+
+Use exactly these type names (case-sensitive) — not lowercase (`string`), synonyms (`Number`, `Text`, `Integer`), or types outside this set.
+
+---
+
+## Standard HTTP Status Codes
+
+| Code | Meaning |
+|---|---|
+| 200 | OK with data |
+| 201 | Created |
+| 204 | No content |
+| 400 | Validation error / bad input |
+| 401 | Authentication required |
+| 404 | Resource not found |
+| 409 | Conflict (e.g. duplicate) |
+| 500 | Server error |
+
+---
+
+## 1. Boards
+
+**File**: `src/slices/change/api-boards/routes.ts`
+
+### POST `/api/org/:orgId/boards/:boardId/events`
+Persist board/timeline row events as an array of mixed event types.
+
+**Request body**: Array of node, comment, edge, or board events  
+**Response**: `200` — processed results array
+
+---
+
+### GET `/api/boards`
+List all boards.
+
+**Response**: `200` — `Board[]`
+
+---
+
+### DELETE `/api/org/:orgId/boards/:boardId`
+Delete a board.
+
+**Response**: `204`
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/events`
+Get a page of board events in sequence order — **at most 300 per call**, oldest first. One call is not the whole log: to read it all, pass the last event's `seq` as `since` and repeat while the `X-Has-More` response header is `true`. `X-Page-Size` carries the page size that applied.
+
+**Query params**:
+- `since` (integer, optional) — only events with a `seq` greater than this
+- `skipSilent` (boolean, default `true`) — `false` also includes events marked silent
+- `seq` (integer, optional) — only the event of exactly this seq (silent or not); `since` and `skipSilent` are ignored
+
+**Response**: `200` — event array (at most 300; at most one with `seq`, empty if there is none — `X-Has-More` is then `false`)
+**Errors**: `400` `EVENT_SEQ_INVALID` — `seq` is not a non-negative integer
+
+```bash
+since=0
+while :; do
+  more=$(curl -s -D - -o page.json "$BASE_URL/api/org/$ORG_ID/boards/$BOARD_ID/events?since=$since" -H "x-token: $TOKEN" \
+    | tr -d '\r' | awk -F': ' 'tolower($1)=="x-has-more"{print $2}')
+  # ...use page.json...
+  [ "$more" = "true" ] || break
+  since=$(jq '.[-1].seq' page.json)
+done
+```
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/nodes/:nodeId/comments`
+Get all comments for a node.
+
+**Response**: `200` — comment array
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/nodes/:nodeId/comments`
+Add one comment to one node.
+
+**Request body**: `{ text: string, type?: 'COMMENT' | 'TASK' | 'QUESTION', author?: string }`
+**Response**: `201` — `{ id }`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/comments`
+Post several comments, on any nodes of one board, in a single request — the batch form. Use it for a review that raises a question per element (`/wdyt`) instead of one request per comment.
+
+**Request body**: `Array<{ nodeId: string, text: string, type?: 'COMMENT' | 'TASK' | 'QUESTION', author?: string }>`
+**Response**: `201` — `{ results: Array<{ nodeId, id } | { nodeId, error }> }`, in request order
+
+Entries are independent: one naming a node that doesn't exist is reported in `results` while the rest are still posted.
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/bucket`
+Create a Supabase storage bucket for the board.
+
+**Response**: `200` — `{ ok: boolean, bucket: string, alreadyExisted: boolean }`
+
+---
+
+## 2. Chapters & Timelines
+
+**File**: `src/slices/change/api-chapters/routes.ts`
+
+A "chapter" is a timeline — the same entity, referenced as `chapterId` in node/placement payloads and as `:timelineId` in the column/lane/cell routes below.
+
+### POST `/api/org/:orgId/boards/:boardId/chapters`
+Create a chapter node.
+
+**Request body**:
+```typescript
+{
+  position?: { x: number, y: number }
+  title?: string      // names the chapter on creation — no follow-up rename
+  columns?: number    // initial column count, default 3
+  lanes?: Array<{ type: 'actor'|'interaction'|'swimlane'|'spec'|'feedback'|'table', label?: string, height?: number }>
+}
+```
+
+**Response**: `200` — `{ id, eventId, columnIds: string[], lanes: Array<{id, type, label}> }`
+
+`lanes` replaces the default Actor/Interaction/Swimlane/Spec set — this is how a chapter gets lanes named after what they hold, or several lanes of one type (one swimlane per context), without an `add_lane` call per lane. They are sorted into the required order (actor → interaction → swimlane → spec → feedback/table) automatically, keeping the given order within a type, so no ordering error is possible. Every column id and lane id comes back in the response — don't re-read the chapter just to place something into it.
+
+Omitting `position` auto-stacks the new chapter below the lowest existing chapter on the board, using each existing chapter's *actual current* row-height total (not the height it was created with) plus a fixed margin — so a chapter that grew via `add_lane`/`add_column` after another was stacked below it won't get overlapped by yet another auto-stacked chapter.
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/chapters/bounds`
+Get the absolute canvas bounding box of every chapter on the board — the same real-current-size derivation `create_chapter`'s auto-stacking uses internally, exposed for callers who want to compute a placement themselves (e.g. an explicit `x`/`y`, or a position relative to a specific chapter rather than "below everything").
+
+**Response**: `200` — `{ chapters: Array<{ id: string, title?: string, x: number, y: number, width: number, height: number }> }`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/columns`
+Add a column to a timeline.
+
+**Request body**: `{ index?: number }` (integer index, optional)  
+**Response**: `200` — `{ columnId: string, index: number, totalColumns: number }`
+
+---
+
+### DELETE `/api/org/:orgId/boards/:boardId/timelines/:timelineId/columns/:columnId`
+Delete a column from a timeline. Removes the column and all its cells. Cannot delete the last column.
+
+**Response**:
+- `200` — `{ columnId: string, totalColumns: number }`
+- `400` — validation error (e.g. last column)
+- `404` — timeline or column not found
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/lanes`
+Add one or more lanes (rows) to a timeline.
+
+**Request body**:
+```typescript
+{
+  type: 'actor' | 'interaction' | 'swimlane' | 'spec' | 'feedback' | 'table'
+  label?: string
+  index?: number
+  height?: number
+}
+// or, batch form — every lane added in one request, applied in order:
+[ { type: 'interaction', label: 'Interaction' }, { type: 'swimlane', label: 'Ordering' } ]
+```
+**Response**: `200` — lane data, or `{ lanes: [...] }` for the batch form
+
+For a chapter that doesn't exist yet, pass `lanes` to `POST .../chapters` instead — that needs no lane call at all.
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/cells/:cellId/drop`
+Drop a node into a timeline cell. Validates placement rules. If the node was already placed in another cell on this timeline, that cell is automatically cleared as part of the same operation — a node can only ever occupy one cell.
+
+**Request body**: `{ nodeId: string, nodeType: ElementType }`
+
+**Placement rules**:
+- `swimlane` lane → accepts `EVENT`
+- `interaction` lane → accepts `COMMAND`, `READMODEL`
+- `actor` lane → accepts `SCREEN`, `AUTOMATION`
+- `feedback` lane → accepts markdown
+- `spec` lane → accepts `SPEC_NODE`
+
+**Response**:
+- `200` — drop result
+- `400` — placement violation
+- `404` — cell or node not found
+
+---
+
+### Feedback lanes and MARKDOWN nodes (free-text notes)
+
+A chapter has no `feedback` lane by default — add one first via the lanes endpoint above (`{"type": "feedback", "label": "Notes"}`), which returns a `laneId`. This is a normal row in `meta.timelineData.rows` (`type: "feedback"`) alongside `actor`/`interaction`/`swimlane`/`spec`.
+
+Place a free-text markdown note in that lane the same way any other node is placed — a plain `node:created` event through `POST .../nodes/events` (§3), **not** the cell-drop endpoint above. `cellId` is `"<feedbackRowId>-<columnId>"`, same convention as every other lane:
+
+```json
+{
+  "id": "<event-uuid>",
+  "eventType": "node:created",
+  "nodeId": "<node-uuid>",
+  "chapterId": "<chapterId>",
+  "cellId": "<feedbackRowId>-<columnId>",
+  "meta": {
+    "type": "MARKDOWN",
+    "title": "Modeling Reasoning — <Chapter Name>",
+    "description": "# Heading\n\nFull markdown body here — headings, lists, bold, etc. all render."
+  }
+}
+```
+
+The node's content lives in `meta.description` (a plain string of markdown source) — **not** `meta.content`; that field is silently accepted and stored but never rendered, producing a visibly empty note. There is no `fields[]` array on this element type, and no separate render/sketch call is needed (unlike SCREEN/HTML_SCREEN). `node.type` comes back as `"markdown"` (lowercase) on read.
+
+---
+
+## 3. Nodes
+
+**File**: `src/slices/change/api-nodes/routes.ts`
+
+All node endpoints require header: `x-user-id`
+
+Also send `x-agent-id` (`$EVENTMODELERS_AGENT_ID`) on every write — that is what attributes the change to this agent by name on the board — and, while working a prompt that came from a chat, `x-chat-session-id` (`CHAT_SESSION_ID`), which ties the change to that conversation. See **Authentication & Headers** above.
+
+### POST `/api/org/:orgId/boards/:boardId/nodes/events`
+Submit node change events.
+
+Any `node:created` event carrying a `chapterId` plus `cellId`/`cellName` (i.e. placing a node on a timeline) also triggers a best-effort, fire-and-forget auto-connect to type-compatible neighbors — same rules as the auto-connect endpoint below. Failures there never fail this call.
+
+A `node:deleted` event cascades: if the deleted node is a chapter (timeline), every node placed in one of its cells and any node parented to it (e.g. a SLICE_BORDER spanning one of its columns) is deleted too, along with all their edges.
+
+**Request body**: `NodeChangeEvent[]`
+
+Every event carries its own `id` — **required**, a fresh uuid per event and never the node id. An event without one is rejected (`400`, invalid event shape). It keys the response's `hashes` map, and it is what makes a resubmit safe: the board-event insert ignores a conflicting id, so the same batch sent twice writes one history row per event rather than two.
+
+Don't send `boardId` or `timestamp` per event: the board is the path's (the one this request was authorized for) and the timestamp is the server's. Both are ignored if sent — older payloads that include them still work.
+
+```typescript
+interface NodeChangeEvent {
+  id: string                    // required — fresh uuid per event, NOT the node id; keys the response's hashes map
+  eventType: 'node:created' | 'node:changed' | 'node:deleted'
+  nodeId: string
+  // boardId / timestamp: don't send them — server-derived, ignored if present
+  userId?: string
+  hash?: string                 // content hash
+  changedAttributes?: string[]  // dot-paths e.g. 'meta.title'
+  node?: {
+    id: string
+    data: {
+      backgroundColor?: string
+      title?: string
+      url?: string
+      linkedTo?: string            // rendering mirror only — meta.linkedTo (below) is authoritative
+      // ...other node data fields
+      // Do NOT set a "type" here — the server derives the node's render type from
+      // meta.type automatically. Setting one yourself risks it being read as the
+      // render type itself and breaking rendering.
+    }
+  }
+  meta?: {
+    type: ElementType
+    title?: string
+    description?: string
+    fields?: Record<string, unknown>
+    linkedTo?: string            // origin node id — the authoritative linked-copy pointer
+    // ...
+  }
+  edges?: Array<{
+    id: string
+    source: string
+    target: string
+    sourceHandle?: string
+    targetHandle?: string
+  }>
+  chapterId?: string   // for cell placement
+  cellName?: string    // spreadsheet-style, always <letter(s)><number> e.g. "B2", "AA10" — pass through as-is, never decompose or interpret it
+}
+```
+
+**Response**: `200` — `{ hashes: { [eventId: string]: string } }`
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/nodes`
+List all nodes on a board.
+
+**Query params** (each at most once — a repeated or nested param is `400 QUERY_PARAM_INVALID`):
+- `type?: ElementType` — exact match.
+- `name?: string` — partial, case-insensitive title match.
+- `chapterId?: string` — only nodes placed in this chapter (timeline).
+- `projection?: "line"` — compact `{id, type, title, fields?}` per node (`fields` = attribute names only, absent on nodes without fields) instead of the full record. Neither form carries `cellName` — address existing nodes by `id`. Any other value is `400 PROJECTION_INVALID`.
+- `cellId?: string` — return only the node occupying this timeline cell (format `<rowId>-<colId>`). Requires `timelineId`. Empty array if the cell is unoccupied.
+- `colId?: string` — return every node occupying this column, across *all* rows of the timeline (e.g. to check for an existing COMMAND/READMODEL/SCREEN/AUTOMATION before placing one, since the server caps those at one per column even across separate lane rows). Requires `timelineId`. Combine with `type` to narrow to one element type.
+- `timelineId?: string` — the CHAPTER node `cellId`/`colId` are resolved against. Required together with either of those two; `400` if omitted.
+
+Cell/column occupancy lives only in the CHAPTER node's `meta.timelineData.cells`, never on the node rows themselves — this endpoint resolves `cellId`/`colId` against that timeline internally so callers don't have to fetch and parse the whole chapter node just to check occupancy.
+
+**Response**: `200` — node record array (or `line` projections). `400` — `cellId`/`colId` given without `timelineId`, `PROJECTION_INVALID`, or `QUERY_PARAM_INVALID`. `404` — `timelineId` doesn't reference an existing CHAPTER node with grid data.
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/nodes/query`
+Fetch a known set of nodes in one call.
+
+**Body**: `{ "ids": string[], "projection"?: "line" }` — `ids` non-empty. Missing ids are silently omitted. Without `projection`, full stored records; `line` gives the compact shape above. Neither carries `cellName`.
+
+**Response**: `200` — node array. `400` — `ids` empty/not an array, or `PROJECTION_INVALID`.
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/nodes/:nodeId`
+Get a single node.
+
+**Query params**:
+- `projection?: "cells" | "edges"` — `cells` (CHAPTER nodes only) returns just `{rows, columns, cells}` — read `cells` directly, not `.meta.timelineData.cells`; `edges` (any node) returns `{nodeId, edges}`, its inbound/outbound connections, without the node's content. Omit for the full stored node (no `cellName`).
+
+**Response**: `200` — node record or the requested projection. `400` — `PROJECTION_INVALID`, `PROJECTION_NODE_TYPE_MISMATCH` (`cells` on a non-CHAPTER node), or `TIMELINE_NO_GRID` (a CHAPTER without grid data). `404` — node not found: `{ error, code: "NODE_NOT_FOUND", context }`.
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/nodes/:nodeId/auto-connect`
+Auto-connect a node to its timeline neighbors — mirrors the frontend's auto-connect-on-place behavior. Looks only at the node's own timeline column and the previous column (never ahead), and creates `edge:added` events to every type-compatible neighbor found there, using the same pairing rules as connections created via node events (COMMAND→EVENT, SCREEN→COMMAND, EVENT→READMODEL, READMODEL→SCREEN, READMODEL→AUTOMATION, AUTOMATION→COMMAND).
+
+Incompatible or already-connected neighbors are reported in `skipped`, not an error. Returns an empty result for nodes not placed on any timeline, or not a connectable element type (e.g. SCENARIO/spec nodes are never auto-connected).
+
+A COMMAND is driven by exactly one upstream trigger — one SCREEN or one AUTOMATION, never both. The previous column's SCREEN/AUTOMATION is skipped whenever the COMMAND already has an inbound trigger, whether that's a SCREEN or AUTOMATION sitting in its own column, or a pre-existing inbound edge already in the DB (e.g. from a prior auto-connect run or a manual connection).
+
+**Connections (both auto-connect and `set_connection`) only ever pair nodes on the same timeline** — a node in Chapter A can never be wired directly to a node in Chapter B, even when the type pair is otherwise valid (e.g. EVENT→READMODEL). No direct cross-timeline connection is possible.
+
+**The supported workaround is a linked copy**: place a plain EVENT node into its own swimlane on the *consuming* timeline, then call `link_element` (below) to link it to the origin node. Linking means first create, then link. `eventmodeling-checking-completeness` documents how to recognize a linked copy when reading the board — it's an intentional copy, never a duplicate to clean up.
+
+**Response**:
+- `200` — `{ connected: [{edgeId, source, target, created}], skipped: [{nodeId, reason}] }`
+- `404` — node not found
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/connections`
+Create a single type-checked directed edge between two existing nodes — the REST fallback for `set_connection`.
+
+**Request body**: `{ source: string, target: string }` (node ids)
+
+**Response**: `200`/`201` — `{ edgeId, source, target }` on success · `400` — the pair is not one of the allowed type combinations · `404` — a node id doesn't exist
+
+**`EVENT → READMODEL` is conditionally exempt from column ordering** — an event in a later column can connect to a read model in an earlier column, but only when that read model already feeds an AUTOMATION (i.e. a `READMODEL → AUTOMATION` edge already exists). Such an accumulator read model is a continuously-listening projection, not a point-in-time action, so it can go on collecting events from anywhere later on its timeline (e.g. a running total feeding a downstream process). A plain display read model with no automation still rejects a backward connection — wire the `READMODEL → AUTOMATION` edge first if the backward connect is rejected and you expect this exemption to apply. This exemption is deliberate-only via this endpoint — auto-connect never infers a backward `EVENT → READMODEL` pairing. Every other pair (`SCREEN → COMMAND`, `COMMAND → EVENT`, `READMODEL → SCREEN`, `READMODEL → AUTOMATION`, `AUTOMATION → COMMAND`) is always forward-only, no exceptions. If a connection you expect to work gets rejected, retry once before concluding it's blocked — a transient rejection has been observed on an otherwise-valid pair.
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/nodes/:nodeId/link`
+Turn a node into a linked copy of `:nodeId` — the REST fallback for `link_element`. The copy receives a full copy of `:nodeId`'s meta (a replacement, not a merge) plus `meta.linkedTo`. COMMAND/EVENT/READMODEL only; `:nodeId` must not itself already be a linked copy.
+
+**Request body** — exactly one of the two:
+```typescript
+{
+  targetNodeId: string  // existing same-type node to convert into a linked copy
+}
+// or: create the copy in this same request
+{
+  place: {
+    timelineId: string     // chapter to place the copy on
+    columnIndex?: number   // columns are added to reach it
+    lane?: string          // row id or label, when the chapter has several lanes of that type
+    autoConnect?: boolean  // default true
+  }
+}
+```
+
+With `place` the copy inherits the original's element type and title, so a translation or automation chain no longer needs a `node:created` call before this one.
+
+**Response**: `200` — `{ nodeId, linkedTo, type }`, plus `placed: { nodeId, cellName, columnIndex }` when `place` was used · `400` — neither or both of `targetNodeId`/`place`, type mismatch, self-link, unsupported element type, or the original is itself a linked copy · `404` — the original or `targetNodeId` doesn't exist
+
+---
+
+## 4. Images
+
+**File**: `src/slices/change/api-images/routes.ts`
+
+### POST `/api/org/:orgId/boards/:boardId/images/:imageId`
+Update a board image.
+
+**Request**: `multipart/form-data` — field `file` (binary)  
+**Response**: `204`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/imagesnapshots/:imageId`
+Update an image snapshot.
+
+**Request**: `multipart/form-data` — field `file` (binary)  
+**Response**: `204`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/image-nodes/:nodeId`
+Create an image node.
+
+**Request**: `multipart/form-data` — fields: `file`, `chapterId`, `cellName`, `title?` (label shown on the node, `meta.title`)  
+**Response**: `204`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/images/:imageId/sketch`
+Render a sketch description to WebP and upload.
+
+**Request body**:
+```typescript
+{
+  elements: object[]           // sketch element descriptors
+  semanticDescription?: string // human-readable description stored in metadata
+}
+```
+**Response**: `204`
+
+---
+
+### POST `/api/org/:orgId/boards/:boardId/image-nodes/:nodeId/sketch`
+Create a SCREEN node from a sketch description.
+
+**Request body**:
+```typescript
+{
+  chapterId: string
+  cellName: string
+  description: { elements: object[] }
+  semanticDescription?: string
+  title?: string               // label shown on the node (meta.title)
+}
+```
+**Response**: `204` OR `400` (validation error)
+
+---
+
+## 5. Slices
+
+**File**: `src/slices/change/api-.slices/routes.ts`
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/slices`
+Create a complete slice (1 column + its nodes automatically placed).
+
+**Request body**:
+```typescript
+{
+  type: 'state-change' | 'state-view' | 'automation'
+  index?: number
+  nodes?: {
+    actor?: Partial<NodeData> & { rowId?: string, fields?: FieldDef[] }
+    interaction?: Partial<NodeData> & { rowId?: string, fields?: FieldDef[] }
+    swimlane?: Partial<NodeData> & { rowId?: string, fields?: FieldDef[] }
+  }
+  status?: 'Created' | 'Planned' | 'InProgress' | 'Review' | 'Done' | 'Blocked' | 'Assigned' | 'Informational'
+}
+```
+
+`fields` writes that node's attributes in the same call, and `status` gives the SLICE_BORDER its `sliceStatus` on creation — neither needs a follow-up write.
+
+**Slice node mapping**:
+- `state-change` → HTML_SCREEN (actor) + COMMAND (interaction) + EVENT (swimlane)
+- `state-view` → HTML_SCREEN (actor) + READMODEL (interaction) + EVENT (swimlane, **only when `nodes.swimlane` is passed**)
+- `automation` → AUTOMATION (actor) + COMMAND (interaction) + EVENT (swimlane)
+
+A `state-view`'s read model is normally fed by an event that already exists in an earlier column, so its event is opt-in: pass `nodes.swimlane` (an empty object is enough) to have one created, omit it to mean "an existing event feeds this". When omitted, the response has no `nodes.swimlane` and auto-connect wires the read model to the type-compatible event in the previous column — previously an untitled EVENT was placed in the slice's swimlane slot, which then had to be removed with `delete_node`. A `state-change`/`automation` event is the slice's own output and is always placed. The endpoint never creates a lane: a chapter with no swimlane lane yields a slice without an event rather than an error.
+
+Each chapter has exactly one actor/interaction/swimlane lane by default, but a chapter can have several lanes of the same type (e.g. multiple actor lanes). Without a `rowId`, the node is always placed in the **first** lane of the matching type — pass `nodes.<actor|interaction|swimlane>.rowId` (a row id from the chapter's `timelineData.rows`) to target a specific lane instead. An invalid `rowId` (not found, or found but the wrong lane type) is a `400 ROW_NOT_FOUND`/`ROW_TYPE_MISMATCH` error.
+
+The actor HTML_SCREEN is created as a **stub** — a single visibly-placeholder page ("Untitled screen — design pending") unless `nodes.actor.pages` is passed explicitly. Whoever calls this (the `add-next-slice` skill — the one that creates a brand-new slice from scratch, as opposed to `eventmodeling-slicing-event-models`, which only makes existing elements explicit) is responsible for immediately replacing that stub via the `html-screen` skill — including gathering the board's existing screens first so the new one matches their established style, since `html-screen` itself has no visibility into other screens.
+
+**Response**: `200` — slice data
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/slice-definitions`
+Create a standalone SLICE_BORDER node spanning an **existing** column. Unlike the endpoint above, this does not add a column or any actor/interaction/swimlane content nodes — the column must already exist (e.g. created via `POST .../slices` or the column API) and is referenced by `columnId`.
+
+**Request body**:
+```typescript
+{
+  columnId: string   // id of an existing column on this timeline
+  title: string      // slice title — always taken from this field, never derived
+  status?: 'Created' | 'Planned' | 'InProgress' | 'Review' | 'Done' | 'Blocked' | 'Assigned' | 'Informational'
+  data?: Record<string, unknown>   // optional node.data payload
+  meta?: Record<string, unknown>   // optional extra meta fields (type, colId, title are always set explicitly and cannot be overridden here)
+}
+```
+
+**Response**: `200` — `{ nodeId, timelineId, columnId, title, status? }` — `status` sets `sliceStatus` straight away, instead of a follow-up `update_slice_status`
+**Errors**: `400` missing `columnId`/`title` or column not found · `404` timeline not found
+
+---
+
+## 6. Specifications (GWT Scenarios)
+
+**File**: `src/slices/change/api-specs/routes.ts`
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/columns/:columnId/scenarios`
+Append Given-When-Then scenario(s) to a column's spec node — the node is created automatically if the spec cell is empty. Accepts a single scenario object or an array.
+
+**Request body**:
+```typescript
+{
+  id?: string       // generated when omitted
+  title: string
+  vertical?: boolean
+  examples?: unknown[]
+  given?: SpecStep[]  // EVENTs from this timeline
+  when?: SpecStep[]   // at most one COMMAND, or one inline QUERY object; empty if then has a READMODEL
+  then?: SpecStep[]   // EVENTs only OR exactly one READMODEL (not mixed)
+  expectError?: boolean, errorDescription?: string   // error case: leave `then` empty
+}
+
+// A step is addressed either way:
+{ id: 'node-uuid' }                          // a board node
+{ title: 'OrderPlaced', type: 'EVENT' }      // resolved against this timeline's own elements
+```
+
+A step given as `{title, type}` is resolved server-side, so the names you already know need **no `get_spec_info`/`get_nodes` call first**. A title matching more than one element is rejected (`SCENARIO_ITEM_AMBIGUOUS`) with the candidates rather than guessed at, and resolution runs before anything is written — a bad name leaves no empty spec node behind.
+
+**Validation rules**:
+- `given`: only EVENTs from same timeline
+- `when`: max one COMMAND; must be empty when `then` contains a READMODEL (use an inline QUERY item for a state-view)
+- `then`: all EVENTs OR exactly one READMODEL — never mixed
+- All referenced nodes must belong to the same chapter/timeline
+
+**Response**:
+- `201` — `{ specNodeId, scenarios, added, isNewNode: boolean }`
+- `400` — validation error
+- `404` — timeline, column, or a referenced node not found
+- `409` — duplicate scenario title
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/timelines/:timelineId/spec-info`
+Get the elements a scenario's given/when/then steps may legally reference (EVENT, COMMAND, READMODEL of that timeline). Only needed when you want the ids themselves — a scenario step can name its element by title instead.
+
+**Response**: `200` — `{ timelineId: string, elements: ElementRecord[] }`
+
+---
+
+### Storylines
+
+> **Create a storyline whenever `eventmodeling-elaborating-scenarios`'s GWT-vs-storyline decision
+> rule calls for one** (e.g. a todo list's open→close lifecycle) — that skill's own per-read-model
+> judgment is the trigger, not a specific word in the user's request. GWT scenarios via
+> `add_scenario`/`POST .../scenarios` still cover everything the decision rule doesn't.
+
+An ordered, branchable walkthrough of existing board elements ("beats"), stored alongside GWT
+scenarios on the same SCENARIO spec node, in a sibling `meta.storylines` collection.
+
+### POST `/api/org/:orgId/boards/:boardId/timelines/:timelineId/columns/:columnId/storylines`
+Append one or more storylines to a column's spec node. The spec node is auto-created if missing
+(shared with scenarios).
+
+**Request body**: a single storyline object or an array:
+```typescript
+{
+  id: string
+  title: string          // must be unique within the spec node
+  description?: string
+  layout?: 'horizontal' | 'vertical'
+  beats: Array<{
+    instanceId: string   // unique per beat, even when refId repeats
+    refId: string        // board node id — must belong to the same timeline
+    type?: string
+    title?: string
+    isError?: boolean    // marks an alternate/error branch off the previous beat
+    fields?: unknown[]
+    expectEmptyList?: boolean
+    exampleMode?: string
+    examples?: unknown[]
+  }>
+}
+```
+
+**Response**:
+- `201` — `{ specNodeId, storylines, added, isNewNode }`
+- `400` — validation error
+- `404` — timeline, column, or referenced node not found
+- `409` — duplicate storyline title
+
+---
+
+## 7. Config Import
+
+**File**: `src/slices/change/config-import/routes.ts`
+
+### POST `/api/org/:orgId/boards/:boardId/import-config`
+Import an EventModelingJson config to populate a board.
+
+**Request**: `multipart/form-data` with field `file` OR `application/json` body:
+```typescript
+{ slices: SliceDefinition[] }
+```
+
+**Response**: `200` — transformed canvas with nodes and edges
+
+---
+
+## 8. Slice Data
+
+**File**: `src/slices/slicedata/routes.ts`
+
+### GET `/api/org/:orgId/boards/:boardId/slicedata`
+Build structured slice data from board state.
+
+**Query params**:
+- `contextId` OR `contextName` (one required) — a MODEL_CONTEXT node, or a timeline name (a timeline with no assigned/connected context scopes to that timeline alone).
+- `sliceId?` — one slice only.
+- `projection?: "outline" | "fields" | "specs"` — `outline` = slice header + every element list as `{id, title, type}` (no fields, specs, comments); `fields` = header + elements with their fields and dependencies, plus actors and aggregates (no specs, storylines, comments, prompts, notes); `specs` = header + specifications and storylines, no elements. Omit for the full graph.
+- `format?: "json" | "yaml" | "textual" | "toon" | "emlang" | "esdm"` (default `json`). `outline` and `specs` encode only as `json`, `yaml` or `toon`; `fields` works with every format.
+
+**Response**: `200` — slice data matching event modeling schema, in the requested format. `400` — no context given, unsupported format, `PROJECTION_INVALID`, or `PROJECTION_FORMAT_UNSUPPORTED` (`outline`/`specs` with `textual`/`emlang`/`esdm`). `404` — no context or timeline matches, or `SLICE_NOT_FOUND` (unknown `sliceId`).
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/slicedata/slices`
+List all slices on a board.
+
+**Query params**: `contextName?` — restrict to slices of this MODEL_CONTEXT (or timeline) name.
+
+**Response**: `200` — `{ slices: Array<{ id: string, title: string, status: string }> }`. `404` — `CONTEXT_NOT_FOUND` (an unknown `contextName` is an error, not an empty list).
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/reporting/rework/contexts/:contextId`
+**File**: `src/slices/change/reporting/rework/routes.ts`
+
+How much each slice of one context has been reworked — read-only, derived from the board event log; nothing is stored
+for it.
+
+A slice's rework is read from its own SLICE_BORDER history. Going backwards means a step down the progress order
+(Created → Planned → Assigned → InProgress → Review → Done), or reaching `Blocked` from `Review`/`Done`;
+`Informational` is never scored. `reopens` counts transitions leading away from `Done`, `changes` counts writes to the
+slice itself. This says nothing about edits to the elements inside a slice.
+
+`contextId` is a MODEL_CONTEXT node id, or a timeline id — a timeline resolves through the board's own effective
+context (the same rule `slicedata` uses), so one that inherits a context is reported under that context and one with
+none is its own. Any other node type is rejected. Always scoped to one context; there is no board-wide form.
+
+**Response**: `200` — `{ contextId, contextName, metrics, slices[] }`, slices most reworked first.
+`slices[]` = `{ sliceId, title, status, changes, reopens, regressions, everReachedDone }`.
+`metrics` = `{ slices, everReachedDone, reopenedAfterDone, firstTimeRightRate, currentlyReopened, avgReopensPerSlice,
+avgChangesPerSlice }` — `firstTimeRightRate` is the share of the slices that reached Done and never came back, or
+`null` when none got there yet.
+`400` `CONTEXT_ID_REQUIRED` / `CONTEXT_NODE_INVALID` · `404` `CONTEXT_NOT_FOUND`
+
+---
+
+## 9. Extensions
+
+**File**: `src/slices/extensions/routes.ts`
+
+### GET `/api/org/:orgId/boards/:boardId/extensions`
+List extension configs for a board.
+
+**Response**: `200` — extension record array
+
+---
+
+### PUT `/api/org/:orgId/boards/:boardId/extensions/:type`
+Enable or disable an extension.
+
+**Request body**: `{ enabled: boolean, config?: object }`  
+**Response**: `200` — updated extension config
+
+---
+
+## 10. Snapshots
+
+**File**: `src/slices/Snapshots/routes.ts`
+
+All snapshot endpoints require Supabase JWT authentication.
+
+**Constraints**: max 3 snapshots per user, max 30-day retention, max 50 MB file size.
+
+### GET `/api/snapshots`
+List current user's snapshots.
+
+**Response**: `200` — `Array<{ id, name, payload_id, expiry, shared }>`
+
+---
+
+### POST `/api/snapshots`
+Create a snapshot.
+
+**Request**: `multipart/form-data` — fields: `payloadFile` (binary), `name` (string), `retention?` (days, max 30)  
+**Response**: `201` — `{ ok: true, id: string }`
+
+---
+
+### GET `/api/snapshots/:id`
+Load a snapshot's payload.
+
+**Response**: `200` — snapshot payload JSON
+
+---
+
+### PATCH `/api/snapshots/:id/share`
+Share a snapshot (makes it publicly accessible).
+
+**Response**: `200` — `{ ok: true }`
+
+---
+
+### DELETE `/api/snapshots/:id`
+Delete a snapshot.
+
+**Response**: `200` — `{ ok: true }`
+
+---
+
+## 11. Invitations (Organization Membership) — Commands
+
+**Files**: `src/slices/organization/InviteUser/routes.ts`, `src/slices/organization/ConfirmInvitation/routes.ts`, `src/slices/organization/DeleteInvitation/routes.ts`
+
+There is no generic "group"/"role-assignment" API — an organization *is* the group, and a
+member's role is set once, at invite time (there is no separate call to change an existing
+member's role afterward). All of these require a Supabase JWT (`Authorization: Bearer`), never
+a bot `x-token`.
+
+### POST `/api/org/:orga_id/invitations`
+Invite a user to join an organization with a given role. Caller must already be an `admin` of `orga_id`.
+
+**Body**: `{ role: string, email: string, description?: string }`
+**Response**: `201` — invitation created
+**Errors**: `400` role/email missing · `403` caller is not an org admin · `409` user already invited or already a member
+
+---
+
+### POST `/api/invitations/:token/confirm`
+Accept an invitation — `token` is the invitation's own token (from the invite email link), not an API token. The confirming user's own account email must match the invited email.
+
+**Response**: `200` — invitation confirmed, membership created
+**Errors**: `404` invitation not found
+
+---
+
+### DELETE `/api/org/:orga_id/invitations/:invitation_id`
+Cancel a pending invitation.
+
+**Response**: `200`/`204` on success
+
+---
+
+## 12. Invitations (Organization Membership) — Read Models
+
+All require a Supabase JWT (`Authorization: Bearer`).
+
+### GET `/api/user-organizations`
+Organizations (and the caller's role in each) that the authenticated user belongs to.
+
+### GET `/api/client/org/:orgId/invitations`
+Pending invitations for an organization (client-facing list — used by the org settings UI).
+
+---
+
+## 13. Utility
+
+### GET `/api/user`
+Get current authenticated user info.
+
+**Response**: `{ user_id: string, email: string, metadata: object }`
+
+### GET `/api-docs`
+Swagger UI (interactive API explorer)
+
+### GET `/swagger.json`
+OpenAPI specification (JSON)
+
+---
+
+## 14. Prompts
+
+**File**: `src/slices/change/api-prompts/routes.ts`
+
+Prompts are how a human submits work to a modeling agent from the board UI, and how that agent reports its lifecycle back onto the board. Every prompt row has a `status`: `ADDED` (submitted, default) → `CLAIMED` (an agent has picked it up) → `IN_PROGRESS` (an agent is actively working it) → `DONE` (finished). See the `update-prompt-status` skill for the agent-side half of this lifecycle.
+
+### POST `/api/org/:orgId/prompts`
+Submit a prompt for a board timeline. Auth: Supabase JWT (`Authorization: Bearer`).
+
+**Request body**:
+```typescript
+{
+  prompt: string
+  board_id: string
+  timeline_id: string
+  node_id?: string
+  comment_id?: string
+  priority?: boolean          // default false
+  hidden?: boolean            // default false — agent-only task, never returned to a client
+  context?: {                 // optional canvas-selection context for the agent to use
+    selectedCell?: object | null
+    selectedNodes?: string[]  // every element selected when the prompt was sent
+    timelineId?: string | null
+    focusArea?: {             // what was on screen at submit time — orientation, not a task
+      nodes: { id: string, title?: string, type?: string }[]
+      truncated: boolean      // more were visible than the list holds (cap: 15)
+    }
+  }
+}
+```
+
+`context` is stored and handed back verbatim — the backend validates only the *shape* of
+`selectedCell`/`selectedNodes`/`timelineId` and passes everything else (`focusArea` included)
+through opaquely, so new context fields need no backend change.
+
+`focusArea.nodes` is ordered by how much each element says about where the user is, not by
+position alone: chapters first, then the model itself (`COMMAND`, `READMODEL`, `QUERY`,
+`EVENT`), then specs (`SCENARIO`, `SPEC_*`), then everything else (screens, notes, drawings,
+slice frames); within one of those tiers, nearest the centre of the view first. Every entry
+carries its `type`, so a chapter is told from a command without a second lookup.
+
+`hidden: true` marks an agent-only task: still claimed by `/prompts/next` like any other
+prompt, but excluded from every client read (and from Supabase's `prompts_select` RLS policy),
+so it never shows up in the user's prompt list.
+
+**Response**: `201` — the created row, `status: "ADDED"`.
+**Errors**: `400` missing required fields or malformed `context` · `403` no access to board · `404` board/timeline not found or no API token configured for the org
+
+---
+
+### GET `/api/org/:orgId/prompts/next`
+Claim the next pending (`ADDED`) prompt for a board — atomically flips it to `CLAIMED` and returns it. This is what a running modeling agent's warm loop polls. Auth: `x-token` **and** a Supabase JWT (`Authorization: Bearer`) together.
+
+Send `x-agent-id` here too: a prompt the user addressed to one preferred agent (`prompts.agent_id`) is only ever handed to the agent claiming with that id, and a caller without the header claims untargeted prompts only. Addressing one is `POST /api/org/:orgId/prompts` with `agent_id: "<uuid>"` — the board's prompts panel does it when someone stars an agent.
+
+Note what this endpoint does *not* do: an agent that sends its id still gets every untargeted prompt on top of its own. A caller that wants only what was addressed to it has to hand the rest back itself (`POST /prompts/:id/status` with `status: 'ADDED'`), which is what `eventmodelers run --exclusive` does.
+
+**Query params**: `board_id` (required)
+**Response**: `200` — the claimed row (now `status: "CLAIMED"`), including its parsed `context` and the `hidden` flag · `404` — no `ADDED` prompts available
+
+---
+
+### POST `/api/org/:orgId/prompts/:id/status`
+Set a prompt's status, optionally attaching a progress comment. Auth: `x-token` only (bot token — no user JWT needed, this is meant to be called directly by the agent working the prompt).
+
+**Prefer MCP**: `mcp__eventmodelers__update_prompt_status { "promptId": "<id>", "newStatus": "IN_PROGRESS", "comment": "..." }` — no `orgId`/`x-token` needed, same validation and response shape. Fall back to the curl below only when MCP tools aren't connected.
+
+**Request body**:
+```typescript
+{
+  status: 'ADDED' | 'CLAIMED' | 'IN_PROGRESS' | 'DONE'
+  comment?: string   // shown alongside the prompt in the board UI
+}
+```
+
+**Response**: `200` — the updated row
+**Errors**: `400` invalid/missing `status` · `403` token not for this prompt's org · `404` prompt not found · `409` (`PROMPT_STATUS_ALREADY_SET`) the prompt already carries that status — another agent already made this transition, so don't retry it
+
+---
+
+### DELETE `/api/org/:orgId/prompts/:id`
+Delete a prompt outright. Auth: `x-token` only. Manual/admin cleanup — not part of the normal agent lifecycle (use the status endpoint above instead).
+
+**Response**: `204` · `404` prompt not found
+
+---
+
+### DELETE `/api/org/:orgId/prompts/:id/user`
+Delete a prompt you submitted yourself. Auth: Supabase JWT — only deletes rows owned by the calling user.
+
+**Response**: `204` · `404` prompt not found or not yours
+
+---
+
+### GET `/api/org/:orgId/prompts/realtime-token`
+Exchange an `x-token` for a short-lived Supabase-compatible JWT, used to subscribe to the org's realtime channel for live prompt notifications. Auth: `x-token` only.
+
+**Response**: `200` — `{ token: string }`
+
+---
+
+### POST `/api/agent-alive`
+Record a heartbeat ping for a running modeling/build agent. Auth: Supabase JWT (`Authorization: Bearer`) — exchange the `x-token` for one first via `GET /api/org/:orgId/prompts/realtime-token` above; a raw `x-token` alone is not accepted here.
+
+**Body**: `{ token: string, board_id?: string, agent_type: 'MODELING' | 'BUILD', agent_id: string, agent_name?: string }`
+**Response**: `200` — `{ ok: true }`
+**Errors**: `400` `agent_id`/`agent_type` missing · `404` token not found
+
+`agent_id` is the client's own stable id (the heartbeat is keyed on `token` + `agent_id` + `agent_type`); `agent_name` is an optional display name for it, so the board can show which agent is live instead of a bare uuid. Both are overridable per run via `eventmodelers run --id/--name`.
+
+The same `agent_id` belongs in the `x-agent-id` header of every board call this agent makes: the heartbeat says the agent is alive, the header says which of the incoming calls are its. Without it a write is attributed to "some agent", every live agent shares one presence identity on the board, and prompts addressed to a preferred agent are never claimed.
+
+---
+
+### GET `/api/org/:orgId/boards/:boardId/agent-alive`
+Check whether an agent has pinged for a board within the last 45s. Auth: Supabase JWT (`Authorization: Bearer`) — same as the heartbeat above; a raw `x-token` alone is not accepted here either.
+
+**Response**: `200` — `{ alive: boolean, agentTypes: string[], agents: { agentId: string, agentType: string, agentName: string | null }[] }` — one `agents` entry per live agent process, `agentTypes` the de-duplicated set of their types
+
+---
+
+## Domain Events
+
+### Snapshot Events (`src/events/SnapshotsEvents.ts`)
+
+```typescript
+SnapshotStored          // { name, id, payloadId, expiry }
+SnapshotDeleted         // { id }
+SnapshotCleanedUp       // { id }
+PublishedSnapshotDeleted // { id }
+SnapshotShared          // { id }
+SnapshotPublished       // { id, payloadId, bucket, path }
+```
+
+### Invitation Events (`src/slices/organization/OrganizationEvent.ts`)
+
+```typescript
+UserInvited                  // { orgaId, userId, role, invitationId, token, description?, boardId?, email? }
+InvitationConfirmed          // { orgaId, userId, invitationId, token?, email? }
+InvitationDeleted            // { invitationId }
+UserAssignedToOrganization   // { id, userId, orgaId, role?, boardId?, email? }
+UserRemovedFromOrganization  // { orgaId, userId }
+```
+
+All events support optional metadata: `user_id`, `correlation_id`, `causation_id`
+
+---
+
+## Key Source Files
+
+| File | Purpose |
+|---|---|
+| `src/slices/change/types.ts` | `ElementType`, `NodeChangeEvent`, `EdgeEvent` |
+| `src/slices/change/api-boards/routes.ts` | Board CRUD + event persistence |
+| `src/slices/change/api-chapters/routes.ts` | Chapters, columns, lanes, cell drops |
+| `src/slices/change/api-nodes/routes.ts` | Node event sourcing |
+| `src/slices/extensions/supabase/nodes/AutoConnectNode.ts` | Auto-connect logic (timeline neighbor wiring) |
+| `src/slices/change/api-images/routes.ts` | Image upload + sketch rendering |
+| `src/slices/change/api-prompts/routes.ts` | Prompt submission, claiming, and status lifecycle |
+| `src/slices/change/api-.slices/routes.ts` | Slice creation + slice definitions (SLICE_BORDER) |
+| `src/slices/extensions/supabase/slices/CreateSliceDefinition.ts` | Slice definition (SLICE_BORDER) creation logic |
+| `src/slices/change/api-specs/routes.ts` | GWT scenario management |
+| `src/slices/change/config-import/routes.ts` | Config import |
+| `src/slices/slicedata/routes.ts` | Slice data read models |
+| `src/slices/extensions/routes.ts` | Extension management |
+| `src/slices/Snapshots/routes.ts` | Snapshot CRUD |
+| `src/slices/organization/InviteUser/routes.ts`, `ConfirmInvitation/routes.ts`, `DeleteInvitation/routes.ts` | Organization invitation commands |
+| `src/events/SnapshotsEvents.ts` | Snapshot domain events |
+| `src/slices/organization/OrganizationEvent.ts` | Organization/invitation domain events |
+| `backend/src/server.ts` | Route wiring, CORS, `/api/user` |
