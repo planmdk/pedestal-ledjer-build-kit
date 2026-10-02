@@ -29,7 +29,7 @@ description: >
 TODO — describe a write-side slice (command validated against replayed events, new events emitted) in terms of your stack's own primitives.
 
 One pattern only. Directory layout is flat - `src/{basepackage}/slices/{context}/{slicename}/slice.clj`, shared
-`slices/events.clj` for the events.
+`src/{basepackage}/slices/events.clj` for the events.
 
 A state change slice consists of:
 
@@ -52,17 +52,88 @@ From the slice definition, extract:
 
 ---
 
-## Step 2 — the command function
+## Step 2 - the events - only if it doesn't alread exist
 
-## Step 3 - the projection of existing events
+**Check `src/{basepackage}/slices/events.clj` first;** add event only if it does not exist there.
 
-## Step 4 - the change handler interceptor
+```clojure
+(defevent {eventname}
+  :type :{context}/{eventname}
+  :schema [:map
+           ...]
+  :tags [...])
+```
 
-## Step 5 - the routes definition
+**`:tags` is created from the event's fields with `idAttribute: true`**: `[(payload-path <idField1>) ... (payload-path <idFieldN>)]`
 
-## Step 6 - the tests
+**`:schema` is a Malli schema created from the event's fields**: `[:map [:<field1.name> :<field1.type>] ... [:<fieldN.name> :<fieldN.type>]]`
 
-## Step 7 - the storyline-derived tests (optional)
+**Example slice.json event (abbreviated):**
+
+```json
+{
+      ...,
+      "modelContext": "Understanding Eventsourcing",
+      "title": "Cart Created",
+      "fields": [
+        {
+          "name": "cartId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": true
+        },
+        {
+          "name": "userId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        }
+      ],
+    ...
+    }
+```
+
+**Becomes this event in `events.clj`**:
+
+```clojure
+(defevent cart-created
+  :type :understanding-eventsourcing/cart-created
+  :schema [:map
+           [:cart-id :uuid]
+           [:user-id :uuid]
+           [:description :string]]
+  :tags [(payload-path :cart-id) (payload-path :user-id)])
+```
+
+## Step 3 — the command function
+
+## Step 4 - the projection of existing events
+
+## Step 5 - the change handler interceptor
+
+## Step 6 - the routes definition
+
+## Step 7 - the tests
+
+## Step 8 - the storyline-derived tests (optional)
 
 TODO — file layout, naming conventions, framework idioms, how the handler/projection/reactor is wired up.
 
