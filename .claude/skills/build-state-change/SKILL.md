@@ -257,7 +257,31 @@ Validation in the command can depend on projections of existing events.
 
 ## Step 3.2 - the change handler interceptor
 
-A Pedestal interceptor map with `:name` and `:enter` keys. Following the example above, the base pattern is:
+A Pedestal interceptor map with `:name` and `:enter` keys.
+
+**Base pattern**:
+
+```clojure
+(def {commandname}-change-handler
+  {:name ::{commandname}-change-handler
+   :enter (fn [ctx]
+            (let [event-store (:event-store ctx)]
+              (try
+                ({commandname}-change event-store input)
+                (respond-with ctx status headers body)
+                (catch Exception e
+                  (let [{:keys [schema value]} (:data (ex-data e))
+                        errors (merror/humanize
+                                (m/explain schema value)
+                                {:locale :da})]
+                    (assoc-in (respond-with ctx status headers body)
+                              [:response :flash :errors/add-item]
+                              errors))))))})
+```
+
+where `status`, `headers` and `body` must be derived from the slice comments in slice.json to know whether it is a redirect (303 with `location` header), ok (200 with body), created (201 without body), or something else.
+
+**Following the example above**:
 
 ```clojure
 (def add-item-change-handler
