@@ -48,6 +48,7 @@ The page handler interceptor `{slicename}-page-handler` uses the defined `defvie
 From the slice definition, extract:
 - **sliceName** — the slice title
 - **context** — the bounded context
+- **events[]** - the events defined in this slice
 - **readmodels[]** — the read model(s) this slice serves
 - **specifications[]** — test scenarios (given/when/then)
 
@@ -57,7 +58,10 @@ From the slice definition, extract:
 
 ## Step 2 - the events - only if it doesn't alread exist
 
-**Check `src/{basepackage}/slices/events.clj` first;** add event only if it does not exist there.
+**Check `src/{basepackage}/slices/events.clj` first;** add any events which do not exist to this file, taken from:
+
+- all the readmodel's `INBOUND` dependencies
+- all the slice's `events`
 
 ```clojure
 (defevent {eventname}
