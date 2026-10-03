@@ -12,12 +12,6 @@ description: >
 
 # Build State Change Slice
 
-> **TODO — placeholder installed by `init --build-kit`.** Study an existing stack's
-> build-state-change/SKILL.md (stacks/node, stacks/supabase, stacks/axon, or stacks/umadb,
-> under `templates/.claude/skills/`) for the level of detail expected, then rewrite
-> every section below for your stack's real conventions — file layout, naming, and
-> the actual framework/language idioms. Delete this callout once done.
-
 > Before doing anything else, read the slice definition from `.slices/{Context}/{slicename}/slice.json`.
 > This file is the **source of truth** for all fields, events, and metadata — never invent
 > fields not defined there. Keep this line verbatim; it applies to every stack.
@@ -25,8 +19,6 @@ description: >
 ---
 
 ## What a State Change Slice is
-
-TODO — describe a write-side slice (command validated against replayed events, new events emitted) in terms of your stack's own primitives.
 
 One pattern only. Directory layout is flat - `src/{basepackage}/slices/{context}/{slicename}/slice.clj`, shared
 `src/{basepackage}/slices/events.clj` for the events.
@@ -37,6 +29,8 @@ A state change slice consists of:
 - A projection of existing events for consistency checks
 - A change handler Pedestal interceptor
 - A set of routes in Pedestal route syntax in `routes` containing one entry for the change handler interceptor
+
+All this goes into the `slice.clj` file.
 
 ## Step 1 — Read the slice.json
 
@@ -123,31 +117,230 @@ From the slice definition, extract:
   :tags [(payload-path :cart-id) (payload-path :user-id)])
 ```
 
-## Step 3 — the command function
+## Step 3 - the change slice
 
-## Step 4 - the projection of existing events
+```clojure
+(ns {basepackage}.slices.{context}.{slicename}.slice
+  (:require
+   [{basepackage}.common.interceptors :as interceptors]
+   [{basepackage}.slices.events :as ev]
+   [{basepackage}.common.utils :as utils]
+   [dk.planm.ledjer :as l]
+   [dk.planm.ledjer.event :as le]
+   [io.pedestal.http.response :refer [respond-with]]
+   [malli.core :as m]
+   [malli.error :as merror]
+   [malli.transform :as mt]
+   [tick.alpha.interval :as t.i]
+   [tick.core :as t]))
 
-## Step 5 - the change handler interceptor
+;; Command function (step 3.1)
 
-## Step 6 - the routes definition
+;; Change handler Pedestal interceptor (step 3.2)
 
-## Step 7 - the tests
+;; Routes (step 3.3)
+```
 
-## Step 8 - the storyline-derived tests (optional)
+## Step 3.1 — the command function
 
-TODO — file layout, naming conventions, framework idioms, how the handler/projection/reactor is wired up.
+**`{schema}` is a Malli schema derived from the command's fields**: `[:map [:<field1.name> :<field1.type>] ... [:<fieldN.name> :<fieldN.type>]]`
+
+```clojure
+(defn {commandname}-change
+  [event-store payload]
+  (let [coerced-payload (m/coerce
+                         {schema}
+                         payload
+                         mt/string-transformer)]
+    ...))
+```
+
+**Example slice.json command (abbreviated)**:
+
+```json
+{
+      ...,
+      "modelContext": "Understanding Eventsourcing",
+      "title": "Add Item",
+      "fields": [
+        {
+          "name": "cartId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "image",
+          "type": "String",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "price",
+          "type": "Double",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "itemId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "productId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        }
+      ],
+      "type": "COMMAND",
+      ...
+    }
+```
+
+**Becomes this change function in the slice**:
+
+```clojure
+(defn add-item-change
+  [event-store payload]
+  (let [schema
+        coerced-payload (m/coerce
+                         [:map
+                          [:cart-id :uuid]
+                          [:item-id :uuid]
+                          [:product-id :uuid]
+                          [:description :string]
+                          [:image :string]
+                          [:price :number]]
+                         payload
+                         mt/string-transformer)]
+    ... ;; Validation logic
+    (if valid?
+      (l/append event-store [(ev/event-1 ...) (ev/event-2 ...)])
+      (throw (ex-info "... why it failed" {...})))))
+```
+
+Validation in the command can depend on projections of existing events.
+
+**Use a `(l/defview ...)` from Ledjer to project events**
+
+## Step 3.2 - the change handler interceptor
+
+A Pedestal interceptor map with `:name` and `:enter` keys. Following the example above, the base pattern is:
+
+```clojure
+(def add-item-change-handler
+  {:name ::add-item-change-handler
+   :enter (fn [ctx]
+            (let [event-store (:event-store ctx)]
+              (try
+                (add-item-change event-store {:cart-id (get-in ctx [:request :form-params :cart-id])
+                                              :item-id (get-in ctx [:request :form-params :item-id])
+                                              :product-id (get-in ctx [:request :form-params :product-id])
+                                              :description (get-in ctx [:request :form-params :description])
+                                              :image (get-in ctx [:request :form-params :image])
+                                              :price (get-in ctx [:request :form-params :price])})
+                (respond-with ctx 303 {"location" (utils/url-for-safe :understanding-eventsourcing/cart-page :path-params {:cart-id (get-in ctx [:request :form-params :cart-id])})} {})
+                (catch Exception e
+                  (let [{:keys [schema value]} (:data (ex-data e))
+                        errors (merror/humanize
+                                (m/explain schema value)
+                                {:locale :da})]
+                    (assoc-in (respond-with ctx 303
+                                            {"location" (utils/url-for-safe :understanding-eventsourcing/cart-page :path-params {:cart-id (get-in ctx [:request :form-params :cart-ids])})}
+                                            {})
+                              [:response :flash :errors/add-item]
+                              errors))))))})
+```
+
+## Step 3.3 - the routes definition
+
+A set of routes with one entry, in the Pedestal route syntax:
+
+```clojure
+(def routes
+  #{["/understanding-eventsourcing/add-item" :post
+     [;; ... other interceptors (see below)
+      #'add-itemchange-handler]
+     :route-name :understanding-eventsourcing/add-item]})
+```
+
+Relevant interceptors may include:
+
+- `#'interceptors/authenticated-interceptor`
+- `#'interceptors/authorized-interceptor`
+
+Look up interceptors in `src/{basepackage}/common/interceptors.clj` when necessary.
+
+## Step 4 - the tests
+
+Ledjer ships with an in-memory event-store to be used for testing.
+
+Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions under the same `deftest` expression.
+
+```
+(ns {basepackage}.slices.{context}.{slicename}.slice-test
+  (:require
+   [clojure.test :refer [deftest testing]]
+   [{basepackage}.slices.events :as ev]
+   [{basepackage}.slices.{context}.{slicename}.slice :as slice]
+   [dk.planm.ledjer :as l]))
+
+(deftest {slicename}-change
+  (testing "given no prior activity, when {commandname}, then succeeds"
+    (l/gwt
+     :given []
+     :when [#'slice/{commandname}-change input]
+     :then [ ;;... events created from constructor functions in `ev/`
+     ]))
+  (testing "given some events happended, when {commandname} with bad input, then faliure"
+    (l/gwt
+     :given [ ;; ... events created from functions in `ev/`
+     ]
+     :when [#'slice/{commandname}-change bad-input]
+     :then #"error message from the expected thrown error")))
+```
+
+Create events using the event constructor functions in `src/{basepackage}/slices/events.clj`, avoid commands from other slices.
 
 ## Quality gate
-
-TODO — this stack's build command and how to run only this slice's tests (not the full suite).
 
 Before considering the slice done:
 
 - [ ] Every field in slice.json's `commands[]` is in the Command record — no invented fields, none missing
 - [ ] Every field in slice.json's `events[]` is in the Event record — no invented fields, none missing
 - [ ] Every `specifications[]` scenario has a corresponding test method
-??- [ ] If `storylines[]` is present: every COMMAND beat for this slice's command has a storyline test — or was deliberately skipped as untraceable
 - [ ] No business rule exists in the handler that isn't traceable to slice.json's `description`/`comments`
-??- [ ] The Decision's `relevantEvents` query and the append's consistency-boundary query are the SAME query
-??- [ ] `mvn compile -q`, then run the slice's own tests only
-- [ ] If checks pass, commit with `feat: {Slice Name}` and set slice status to `Done`
+- [ ] run the slice's own tests only (`clojure -X:test :nses '["{basepackage}.slices.{context}.{slicename}.slice-test"]'`)
+- [ ] If checks pass, commit with `feat: {slicename}` and set slice status to `Done`
