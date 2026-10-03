@@ -40,7 +40,6 @@ From the slice definition, extract:
 - **commands[]** — list of commands with their data fields
 - **events[]** — list of events emitted by each command
 - **specifications[]** — test scenarios (given/when/then)
-- **storylines[]** - (optional, may be absent) -> narrated walkthroughs with ordered `elements[]` "beats"
 
 > **Comments & description**: each element carries a `comments: string[]` array (board comments) and a `description` field — use them as implementation hints, and resolve consumed comments via `POST <BASE_URL>/api/org/<ORG_ID>/boards/<BOARD_ID>/nodes/<nodeId>/comments/<commentId>/resolve`.
 
