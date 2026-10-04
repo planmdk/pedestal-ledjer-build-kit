@@ -252,7 +252,7 @@ From the slice definition, extract:
 
 Validation in the command can depend on projections of existing events.
 
-**Use a `(l/defview ...)` from Ledjer to project events**
+**Use a `(l/defview ...)` from Ledjer to project events**: see step 3.1 from the build-state-view skill for guidance.
 
 ## Step 3.2 - the change handler interceptor
 
