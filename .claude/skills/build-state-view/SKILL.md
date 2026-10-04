@@ -136,10 +136,9 @@ From the slice definition, extract:
 ```clojure
 (ns {basepackage}.slices.{context}.{slicename}.slice
   (:require
-   [clojure.set :as set]
    [{basepackage}.common.interceptors :as interceptors]
-   [{basepackage}.slices.events :as ev]
    [{basepackage}.common.utils :as utils]
+   [{basepackage}.slices.events :as ev]
    [dk.planm.ledjer :as l]
    [dk.planm.ledjer.event :as le]
    [io.pedestal.http.response :refer [respond-with]]
@@ -157,6 +156,221 @@ From the slice definition, extract:
 
 TODO — file layout, naming conventions, framework idioms, how the handler/projection/reactor is wired up.
 
+
+## Step 3.1 - projections / views
+
+Exactly one pattern: Each readmodel in slice.json becomes a `defview` from ledjer.
+
+Base pattern is this:
+
+```clojure
+(l/defview {readmodel}
+  {} ;; <- the initial value of acc, a map of the readmodel's fields with default values
+  (ev/{event1})
+  (fn {event1}-reducer
+    [acc event]
+    ;; ...modify acc as necessary
+    )
+
+  (ev/{event2})
+  (fn {event2}-reducer
+    [acc event]
+    ;; ... modify acc as necessary
+    )
+
+  ... and so on
+  )
+```
+
+Build up `acc` from the **INBOUND** events of the readmodel. The specifications define any special requirements on how the readmodel's reducers must update `acc`.
+
+**Example (abbreviated)**:
+
+This slice.json readmodel
+
+```json
+{
+      ...,
+      "title": "cart items",
+      "fields": [
+        {
+          "name": "cartId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": true
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "image",
+          "type": "String",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "price",
+          "type": "Double",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "totalPrice",
+          "type": "Double",
+          "example": "",
+          "mapping": "price",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "productId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": false
+        },
+        {
+          "name": "itemId",
+          "type": "UUID",
+          "example": "",
+          "mapping": "",
+          "optional": false,
+          "subfields": [],
+          "cardinality": "Single",
+          "idAttribute": true
+        }
+      ],
+      "type": "READMODEL",
+      "dependencies": [
+        ...,
+        {
+          "id": "a39b1e41-7b38-42b1-8ad3-c9cc18ca2f7c",
+          "type": "INBOUND",
+          "title": "Cart Created",
+          "elementType": "EVENT"
+        },
+        {
+          "id": "544d0a8c-809c-4670-a9d9-aa8259f43c46",
+          "type": "INBOUND",
+          "title": "Item Added",
+          "elementType": "EVENT"
+        },
+        {
+          "id": "b5b7ae0a-d0a7-4b2b-bc14-2086993eface",
+          "type": "INBOUND",
+          "title": "Item Removed",
+          "elementType": "EVENT"
+        },
+        {
+          "id": "d7cb2a4a-6d1a-4abf-9a37-0bdd9b84eb32",
+          "type": "INBOUND",
+          "title": "Cart Cleared",
+          "elementType": "EVENT"
+        },
+        {
+          "id": "3d3f9528-08f8-473b-8456-7b03f6d368ca",
+          "type": "INBOUND",
+          "title": "Item Archived",
+          "elementType": "EVENT"
+        }
+      ],
+      ...
+}
+```
+
+becomes this ledjer `defview` (abbreviated, showing first event only)
+
+```clojure
+(l/defview cart-items
+  {:cart-id nil
+   :description nil
+   :image nil
+   :price nil
+   :total-price nil
+   :product-id nil
+   :item-id nil}
+  (ev/cart-created)
+  (fn cart-created-reducer
+    [acc event]
+    (-> acc
+        (assoc :cart-id (get event :cart-id))
+        (assoc :user-id (get event :user-id))
+        (assoc :description (get event :description))))
+
+  ;; ... add the rest of the event reducers
+  )
+```
+
+## Step 3.2 - hiccup generation
+
+Only if the readmodel is attached to a screen element, i.e. it has an **OUTBOUND** dependency of elementType **SCREEN** in slice.json.
+
+## Step 3.3 - Page handler Pedestal interceptor
+
+Only if the readmodel is attached to a screen element, i.e. it has an **OUTBOUND** dependency of elementType **SCREEN** in slice.json.
+
+## Step 3.4 - Routes
+
+Only if the readmodel is attached to a screen element, i.e. it has an **OUTBOUND** dependency of elementType **SCREEN** in slice.json.
+
+## Step 3.5 - Tests
+
+Ledjer ships with an in-memory event-store to be used for testing.
+
+Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions under the same `deftest` expression.
+
+```
+(ns {basepackage}.slices.{context}.{slicename}.slice-test
+  (:require
+   [clojure.test :refer [deftest testing]]
+   [{basepackage}.slices.events :as ev]
+   [{basepackage}.slices.{context}.{slicename}.slice :as slice]
+   [dk.planm.ledjer :as l]
+   [dk.planm.ledjer.event :as le]))
+
+(deftest {slicename}-change
+  (testing "test 1"
+    (l/gwt
+     :given [(ev/event-1 {...})]
+     :when [#'slice/{readmodel} {(le/payload-path :id-attribute-1) "value-1"
+                                 ;; ... other id attributes
+                                 }]
+     :then {;; ... the readmodel's expected shape
+     })))
+```
+
+Create events using the event constructor functions in `src/{basepackage}/slices/events.clj`, avoid commands from other slices.
+
 ## Quality gate
 
-TODO — this stack's build command and how to run only this slice's tests (not the full suite).
+Before marking this slice as `Done`, verify the implementation against slice.json:
+
+- [ ] Every field in the read model / query result definition in slice.json has a field in the output of the `defview` — no invented fields
+- [ ] Every event type in `events[]` has a reducer in the readmodel — no events missed or assumed
+- [ ] Every GWT scenario in `specifications[]` has a corresponding test method
+- [ ] No extra query parameters or filter logic were added beyond what slice.json defines
+- [ ] No field names were assumed or guessed — if a field is not in slice.json, it is not in the code
