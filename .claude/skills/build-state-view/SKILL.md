@@ -135,6 +135,7 @@ From the slice definition, extract:
 ```clojure
 (ns {basepackage}.slices.{context}.{slicename}.slice
   (:require
+   [{basepackage}.common.coercion :as coercion]
    [{basepackage}.common.interceptors :as interceptors]
    [{basepackage}.common.utils :as utils]
    [{basepackage}.slices.events :as ev]
@@ -368,6 +369,7 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
 - **Return only the page content.** Never emit `[:html ...]`, `[:head ...]` or `[:body ...]` — the
   `hiccup-interceptor` wraps every hiccup response body in the site layout.
 - **Show the screen's `fields`** — they are what the page displays. Take their values from the read model.
+  Show `DateTime` values (instants) through `(coercion/instant->local-date-time instant)`, never in UTC.
 - **One form per command found above**, posting to that command's change slice:
 
 ```clojure
@@ -387,6 +389,9 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
 
   - Input `name`s are the command's field names, kebab-cased — the change handler reads them from
     `:form-params`.
+  - `Date` fields are `<input type="date">`. `DateTime` fields are `<input type="datetime-local">`, prefilled
+    with `(coercion/instant->local-date-time instant)` — the project's fixed zone, see "Dates, times and the
+    project zone" in the `build-state-change` skill.
   - `__anti-forgery-token` is required on every form; without it Pedestal's CSRF protection rejects the post.
   - `{command}-errors` are the errors the change handler put in the flash (step 3.3): a map from field
     name to messages, with `:command/rejected` holding business-rule errors not tied to a field. Show
