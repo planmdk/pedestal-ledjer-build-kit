@@ -268,14 +268,16 @@ The same rules apply to every schema built from slice.json fields — events her
     ... ;; Validation logic
     (if valid?
       (l/append event-store [(ev/event-1 ...) (ev/event-2 ...)])
-      (throw (ex-info "... why it failed" {...})))))
+      (throw (ex-info "... why it failed, for the user" {:type :command/rejected})))))
 ```
 
 Validation in the command can depend on projections of existing events.
 
-**Business-rule violations throw `ex-info`** with a message for the user: the change handler (step 3.2) shows
-the message as is. Invalid input needs no extra code — `m/coerce` already throws an `ex-info` with
-`:type :malli.core/coercion` for it.
+**Business-rule violations throw `(ex-info message {:type :command/rejected})`.** The `:type` is required:
+it is the only thing that tells the change handler (step 3.2) the error is meant for the user, and it shows
+the message as is — so write the message for the end user, in the UI's language. An `ex-info` without it is
+treated as a bug and becomes a server error. Invalid input needs no extra code — `m/coerce` already throws
+an `ex-info` with `:type :malli.core/coercion` for it.
 
 **Use a `(l/defview ...)` from Ledjer to project events**: see step 3.1 from the build-state-view skill for guidance.
 
@@ -288,9 +290,10 @@ A Pedestal interceptor map with `:name` and `:enter` keys.
 ```clojure
 (defn- {commandname}-errors
   [e]
-  (if (= :malli.core/coercion (:type (ex-data e)))
-    (merror/humanize (-> e ex-data :data :explain) {:locale :da})
-    {:command [(ex-message e)]}))
+  (case (:type (ex-data e))
+    :malli.core/coercion (merror/humanize (-> e ex-data :data :explain) {:locale :da})
+    :command/rejected {:command/rejected [(ex-message e)]}
+    (throw e)))
 
 (def {commandname}-change-handler
   {:name ::{commandname}-change-handler
@@ -307,10 +310,13 @@ A Pedestal interceptor map with `:name` and `:enter` keys.
 
 where `status`, `headers` and `body` must be derived from the slice comments in slice.json to know whether it is a redirect (303 with `location` header), ok (200 with body), created (201 without body), or something else.
 
-- **Catch only `clojure.lang.ExceptionInfo`.** Invalid input and business-rule violations are both
-  `ex-info`; anything else is a bug and must surface as a server error, not as a form error.
+- **Only two kinds of error become form errors**: invalid input (`:malli.core/coercion`) and business-rule
+  violations (`:command/rejected`). Everything else — other exceptions, and `ex-info`s from ledjer itself
+  such as query validation, event schema or append-condition failures — is rethrown and surfaces as a
+  server error, so internal messages never reach the user.
 - **The errors are a map from field name to messages**, the shape `merror/humanize` returns for invalid
-  input. A business-rule violation isn't tied to a field, so its message goes under `:command`.
+  input. A business-rule violation isn't tied to a field, so its message goes under `:command/rejected`.
+  Field keys are never namespaced, so it can't collide with a field.
 - **The flash key is `:errors/{commandname}`** — the page showing the form reads its errors from there.
 - **`:locale`**: use the locale the project's other change handlers pass to `merror/humanize`; leave the
   option out if there are none.
@@ -322,9 +328,10 @@ where `status`, `headers` and `body` must be derived from the slice comments in 
 ```clojure
 (defn- add-item-errors
   [e]
-  (if (= :malli.core/coercion (:type (ex-data e)))
-    (merror/humanize (-> e ex-data :data :explain) {:locale :da})
-    {:command [(ex-message e)]}))
+  (case (:type (ex-data e))
+    :malli.core/coercion (merror/humanize (-> e ex-data :data :explain) {:locale :da})
+    :command/rejected {:command/rejected [(ex-message e)]}
+    (throw e)))
 
 (def add-item-change-handler
   {:name ::add-item-change-handler
@@ -440,6 +447,7 @@ Before considering the slice done:
 - [ ] Every field in slice.json's `events[]` is in the event's `defevent` schema — no invented fields, none missing
 - [ ] Every `specifications[]` scenario has a corresponding test
 - [ ] No business rule exists in the handler that isn't traceable to slice.json's `description`/`comments`
+- [ ] Every business-rule `ex-info` has `{:type :command/rejected}` and a message written for the end user
 - [ ] The path follows "Routes and paths", and the routes are in the `set/union` in `system.clj`
 - [ ] run the slice's own tests only (`clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'` — namespace symbols, not strings; strings match nothing and run zero tests)
 - [ ] If checks pass, commit with `feat: {slicename}` and set slice status to `Done`

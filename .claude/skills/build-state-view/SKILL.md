@@ -389,8 +389,8 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
     `:form-params`.
   - `__anti-forgery-token` is required on every form; without it Pedestal's CSRF protection rejects the post.
   - `{command}-errors` are the errors the change handler put in the flash (step 3.3): a map from field
-    name to messages, with `:command` holding errors not tied to a field. Show field errors next to their
-    input and `:command` errors with the submit button.
+    name to messages, with `:command/rejected` holding business-rule errors not tied to a field. Show
+    field errors next to their input and `:command/rejected` errors with the submit button.
 - **Styling and layout follow the project's own `CLAUDE.md`** (design system, CSS classes and tokens).
   Never write raw design values the project's rules forbid.
 - **Client-side behaviour** (only when the screen's description or comments call for it — show/hide,
