@@ -54,11 +54,16 @@ This is the build trigger. Setting `InProgress` and building are one atomic step
 
 2. Run `/load-slice sliceId=<payload.sliceId>` to fetch the full slice, then read the slice definition from `.build-kit/.slices/<contextSlug>/<sliceFolder>/slice.json`. The runner keeps a `slice.json` fresh from a summary endpoint, so a file holding only `id`, `title`, `status` and `sliceType` is that stub, not an empty slice — never conclude a slice has no elements from it. Only if the full fetch itself returns no commands/events/read models/fields is the slice actually empty.
 
-3. Determine the **slice type** from the slice.json:
-   - **Translation** — `sliceType === "TRANSLATION"` → read `description` and `notes` from slice.json for hints; default to `/build-automation` if nothing else is specified
-   - **Automation** — `processors` array is non-empty → invoke `/build-automation`
-   - **State-view** — `projections` or `queries` array is non-empty → invoke `/build-state-view`
-   - **State-change** — default (has `commands` / `events`) → invoke `/build-state-change`
+3. Determine the **slice type** from `sliceType` in the slice.json:
+   - **Automation** — `"AUTOMATION"` → invoke `/build-automation`
+   - **Translation** — `"TRANSLATION"` → read `description` and `notes` from slice.json for hints; default to `/build-automation` if nothing else is specified
+   - **State-view** — `"STATE_VIEW"` → invoke `/build-state-view`
+   - **State-change** — `"STATE_CHANGE"` → invoke `/build-state-change`
+   - **Missing or `"UNDEFINED"`** — fall back on the arrays, in this order:
+     - `processors` non-empty → `/build-automation`
+     - `readmodels` non-empty and `commands` empty → `/build-state-view`
+     - `commands` non-empty → `/build-state-change`
+     - anything else (e.g. only `events`, or nothing at all) is a modelling error: invoke `/request-feedback` explaining that the slice has no command, read model or processor to build. Do not write any code for it.
 
 4. Invoke the matching skill and follow its instructions **completely**. Do NOT implement the slice manually.
 

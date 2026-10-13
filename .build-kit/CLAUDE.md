@@ -36,11 +36,16 @@ When starting to work on a slice, invoke the `update-slice-status` skill with `I
 When asked to build a slice, always follow this flow:
 
 1. Read the slice definition from `.build-kit/.slices/<context>/<slicename>/slice.json`.
-2. Determine the slice type:
-   - **Translation** — `sliceType === "TRANSLATION"` → read `description` and `notes` from slice.json for hints; default to `/build-automation` if nothing else is specified
-   - **Automation** — `processors` array is non-empty → invoke `/build-automation`
-   - **State-view** — `projections` or `queries` array is non-empty → invoke `/build-state-view`
-   - **State-change** — default (has `commands` / `events`) → invoke `/build-state-change`
+2. Determine the slice type from `sliceType` in slice.json:
+   - **Automation** — `"AUTOMATION"` → invoke `/build-automation`
+   - **Translation** — `"TRANSLATION"` → read `description` and `notes` from slice.json for hints; default to `/build-automation` if nothing else is specified
+   - **State-view** — `"STATE_VIEW"` → invoke `/build-state-view`
+   - **State-change** — `"STATE_CHANGE"` → invoke `/build-state-change`
+   - **Missing or `"UNDEFINED"`** — fall back on the arrays, in this order:
+     - `processors` non-empty → `/build-automation`
+     - `readmodels` non-empty and `commands` empty → `/build-state-view`
+     - `commands` non-empty → `/build-state-change`
+     - anything else (e.g. only `events`, or nothing at all) is a modelling error: invoke `/request-feedback` explaining that the slice has no command, read model or processor to build. Do not write any code for it.
 3. Invoke the matching skill and follow its instructions completely. Do not deviate.
 4. **Verify against slice.json**: After the skill completes, check that every command field, event field, and specification in slice.json appears in the implementation. No invented fields — if it is not in slice.json, it must not be in the code. This applies even when the slice was previously `Done` and reappears as `Planned` — never dismiss a mismatch as "already implemented" or harmless drift; diff slice.json against the code field by field and update the code to match every change.
 5. Run quality checks (`clojure -M:test`), then the slice tests only.
