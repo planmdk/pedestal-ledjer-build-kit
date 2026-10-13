@@ -6,7 +6,7 @@ description: >
   Implement DCB-style write slices using the ledjer Clojure library in this project's one
   established pattern: A function of `event-store` and command `payload` either throwing
   or appending events to `event-store`. Use when implementing a new write slice / command
-  handler from a slice.jsOn event model in this project. There is exactly one supported
+  handler from a slice.json event model in this project. There is exactly one supported
   style - do not offer alternatives.
 ---
 
@@ -60,6 +60,28 @@ From the slice definition, extract:
 **`:tags` is created from the event's fields with `idAttribute: true`**: `[(payload-path <idField1>) ... (payload-path <idFieldN>)]`
 
 **`:schema` is a Malli schema created from the event's fields**: `[:map [:<field1.name> :<field1.type>] ... [:<fieldN.name> :<fieldN.type>]]`
+
+### Fields to Malli schema entries
+
+The same rules apply to every schema built from slice.json fields — events here, commands in step 3.1.
+
+- **Name**: kebab-cased keyword — `cartId` → `:cart-id`.
+- **Type** (case-insensitive):
+
+| slice.json `type` | Malli |
+|---|---|
+| `String` | `:string` |
+| `UUID` | `:uuid` |
+| `Boolean` | `:boolean` |
+| `Int`, `Integer`, `Long` | `:int` |
+| `Double`, `Decimal` | `:double` |
+| `Date` | `:time/local-date` |
+| `DateTime` | `:time/instant` |
+| `Custom` | `[:map ...]` built from `subfields` with these same rules; `:map` if it has no subfields |
+
+  A type not in the table gets the closest match, recorded as an assumption.
+- **`cardinality: "List"`** wraps the type in a vector: `[:vector :uuid]`.
+- **`optional: true`** marks the entry optional: `[:image {:optional true} :string]`.
 
 **Example slice.json event (abbreviated):**
 
@@ -142,7 +164,7 @@ From the slice definition, extract:
 
 ## Step 3.1 — the command function
 
-**`{schema}` is a Malli schema derived from the command's fields**: `[:map [:<field1.name> :<field1.type>] ... [:<fieldN.name> :<fieldN.type>]]`
+**`{schema}` is a Malli schema derived from the command's fields**: `[:map [:<field1.name> :<field1.type>] ... [:<fieldN.name> :<fieldN.type>]]`, following "Fields to Malli schema entries" in step 2.
 
 ```clojure
 (defn {commandname}-change
@@ -233,15 +255,14 @@ From the slice definition, extract:
 ```clojure
 (defn add-item-change
   [event-store payload]
-  (let [schema
-        coerced-payload (m/coerce
+  (let [coerced-payload (m/coerce
                          [:map
                           [:cart-id :uuid]
-                          [:item-id :uuid]
-                          [:product-id :uuid]
                           [:description :string]
                           [:image :string]
-                          [:price :number]]
+                          [:price :double]
+                          [:item-id :uuid]
+                          [:product-id :uuid]]
                          payload
                          mt/string-transformer)]
     ... ;; Validation logic
@@ -252,6 +273,10 @@ From the slice definition, extract:
 
 Validation in the command can depend on projections of existing events.
 
+**Business-rule violations throw `ex-info`** with a message for the user: the change handler (step 3.2) shows
+the message as is. Invalid input needs no extra code — `m/coerce` already throws an `ex-info` with
+`:type :malli.core/coercion` for it.
+
 **Use a `(l/defview ...)` from Ledjer to project events**: see step 3.1 from the build-state-view skill for guidance.
 
 ## Step 3.2 - the change handler interceptor
@@ -261,6 +286,12 @@ A Pedestal interceptor map with `:name` and `:enter` keys.
 **Base pattern**:
 
 ```clojure
+(defn- {commandname}-errors
+  [e]
+  (if (= :malli.core/coercion (:type (ex-data e)))
+    (merror/humanize (-> e ex-data :data :explain) {:locale :da})
+    {:command [(ex-message e)]}))
+
 (def {commandname}-change-handler
   {:name ::{commandname}-change-handler
    :enter (fn [ctx]
@@ -268,43 +299,52 @@ A Pedestal interceptor map with `:name` and `:enter` keys.
               (try
                 ({commandname}-change event-store input)
                 (respond-with ctx status headers body)
-                (catch Exception e
-                  (let [{:keys [schema value]} (:data (ex-data e))
-                        errors (merror/humanize
-                                (m/explain schema value)
-                                {:locale :da})]
-                    (assoc-in (respond-with ctx status headers body)
-                              [:response :flash :errors/add-item]
-                              errors))))))})
+                (catch clojure.lang.ExceptionInfo e
+                  (assoc-in (respond-with ctx status headers body)
+                            [:response :flash :errors/{commandname}]
+                            ({commandname}-errors e))))))})
 ```
 
 where `status`, `headers` and `body` must be derived from the slice comments in slice.json to know whether it is a redirect (303 with `location` header), ok (200 with body), created (201 without body), or something else.
 
+- **Catch only `clojure.lang.ExceptionInfo`.** Invalid input and business-rule violations are both
+  `ex-info`; anything else is a bug and must surface as a server error, not as a form error.
+- **The errors are a map from field name to messages**, the shape `merror/humanize` returns for invalid
+  input. A business-rule violation isn't tied to a field, so its message goes under `:command`.
+- **The flash key is `:errors/{commandname}`** — the page showing the form reads its errors from there.
+- **`:locale`**: use the locale the project's other change handlers pass to `merror/humanize`; leave the
+  option out if there are none.
+- **Input** comes from `:form-params`, and from `:path-params` for the ids in the route's path (see
+  "Routes and paths"). Ids of the session user come from `[:request :session :user-id]`, never from the form.
+
 **Following the example above**:
 
 ```clojure
+(defn- add-item-errors
+  [e]
+  (if (= :malli.core/coercion (:type (ex-data e)))
+    (merror/humanize (-> e ex-data :data :explain) {:locale :da})
+    {:command [(ex-message e)]}))
+
 (def add-item-change-handler
   {:name ::add-item-change-handler
    :enter (fn [ctx]
-            (let [event-store (:event-store ctx)]
+            (let [event-store (:event-store ctx)
+                  cart-id (get-in ctx [:request :path-params :cart-id])
+                  cart-page-url (utils/url-for-safe :understanding-eventsourcing/cart-items-page
+                                                    :path-params {:cart-id cart-id})]
               (try
-                (add-item-change event-store {:cart-id (get-in ctx [:request :form-params :cart-id])
-                                              :item-id (get-in ctx [:request :form-params :item-id])
-                                              :product-id (get-in ctx [:request :form-params :product-id])
+                (add-item-change event-store {:cart-id cart-id
                                               :description (get-in ctx [:request :form-params :description])
                                               :image (get-in ctx [:request :form-params :image])
-                                              :price (get-in ctx [:request :form-params :price])})
-                (respond-with ctx 303 {"location" (utils/url-for-safe :understanding-eventsourcing/cart-page :path-params {:cart-id (get-in ctx [:request :form-params :cart-id])})} {})
-                (catch Exception e
-                  (let [{:keys [schema value]} (:data (ex-data e))
-                        errors (merror/humanize
-                                (m/explain schema value)
-                                {:locale :da})]
-                    (assoc-in (respond-with ctx 303
-                                            {"location" (utils/url-for-safe :understanding-eventsourcing/cart-page :path-params {:cart-id (get-in ctx [:request :form-params :cart-ids])})}
-                                            {})
-                              [:response :flash :errors/add-item]
-                              errors))))))})
+                                              :price (get-in ctx [:request :form-params :price])
+                                              :item-id (get-in ctx [:request :form-params :item-id])
+                                              :product-id (get-in ctx [:request :form-params :product-id])})
+                (respond-with ctx 303 {"location" cart-page-url} {})
+                (catch clojure.lang.ExceptionInfo e
+                  (assoc-in (respond-with ctx 303 {"location" cart-page-url} {})
+                            [:response :flash :errors/add-item]
+                            (add-item-errors e))))))})
 ```
 
 ## Step 3.3 - the routes definition
@@ -313,9 +353,9 @@ A set of routes with one entry, in the Pedestal route syntax:
 
 ```clojure
 (def routes
-  #{["/understanding-eventsourcing/add-item" :post
+  #{["/carts/:cart-id/add-item" :post
      [;; ... other interceptors (see below)
-      #'add-itemchange-handler]
+      #'add-item-change-handler]
      :route-name :understanding-eventsourcing/add-item]})
 ```
 
@@ -325,6 +365,41 @@ Relevant interceptors may include:
 - `#'interceptors/authorized-interceptor`
 
 Look up interceptors in `src/{basepackage}/common/interceptors.clj` when necessary.
+
+**Wire the routes into the system**: in `src/{basepackage}/system.clj`, require the slice namespace as
+`slice.{context}.{slicename}` and add `slice.{context}.{slicename}/routes` to the `set/union` of routes.
+
+### Routes and paths
+
+The **route name is the contract between slices**: pages and redirects always refer to routes by name via
+`utils/url-for-safe`, never by path. Route names are mechanical:
+
+- change (state change): `:{context}/{slicename}`
+- page (state view): `:{context}/{slicename}-page`
+
+The **path** is resource-style. Decide it in this order:
+
+1. **Override** — if the command has a comment `path: /...`, use exactly that path. Never resolve a `path:`
+   comment: it stays on the board as the route's specification, so a later rebuild of the slice produces
+   the same path.
+2. **Resource** — one `/{entities}/:{id-field}` pair per id attribute of the entity the command acts on,
+   leaving out `user-id` (it comes from the session):
+   - `{entities}` is the plural of the id field's name without `-id`: `cart-id` → `/carts/:cart-id`.
+     For a generic id field (`id`, `aggregate-id`), name the entity from the command title instead
+     (`Publish Cart` → `carts`).
+   - With several ids, the parent comes first: the entity that exists before the other, i.e. whose id the
+     other entity's events carry. `cart-id` + `item-id` → `/carts/:cart-id/items/:item-id`. If that can't
+     be decided from the model, keep the order of the fields in slice.json.
+3. **Suffix** — the command name, kebab-cased: `/carts/:cart-id/add-item`, `/recipes/:recipe-id/archive-recipe`.
+   A command that creates the entity posts to `/{entities}` without a suffix.
+4. **Collision check** — search the existing `routes` in `src/{basepackage}/slices/**/slice.clj` for the same
+   path and verb. Depending on the router, a duplicate either stops Pedestal from starting or silently
+   shadows one of the routes — and slice tests don't load `system.clj`, so they won't catch it. On a
+   collision, add a suffix from the slice name.
+
+Unless the path came from a `path:` comment, record it as an assumption in `progress.txt`.
+
+The same rules are in the `build-state-view` skill; keep the two in sync.
 
 ## Step 4 - the tests
 
@@ -347,7 +422,7 @@ Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions un
      :when [#'slice/{commandname}-change input]
      :then [ ;;... events created from constructor functions in `ev/`
      ]))
-  (testing "given some events happended, when {commandname} with bad input, then faliure"
+  (testing "given some events happened, when {commandname} with bad input, then failure"
     (l/gwt
      :given [ ;; ... events created from functions in `ev/`
      ]
@@ -361,9 +436,10 @@ Create events using the event constructor functions in `src/{basepackage}/slices
 
 Before considering the slice done:
 
-- [ ] Every field in slice.json's `commands[]` is in the Command record — no invented fields, none missing
-- [ ] Every field in slice.json's `events[]` is in the Event record — no invented fields, none missing
-- [ ] Every `specifications[]` scenario has a corresponding test method
+- [ ] Every field in slice.json's `commands[]` is in the change function's schema — no invented fields, none missing
+- [ ] Every field in slice.json's `events[]` is in the event's `defevent` schema — no invented fields, none missing
+- [ ] Every `specifications[]` scenario has a corresponding test
 - [ ] No business rule exists in the handler that isn't traceable to slice.json's `description`/`comments`
-- [ ] run the slice's own tests only (`clojure -X:test :nses '["{basepackage}.slices.{context}.{slicename}.slice-test"]'`)
+- [ ] The path follows "Routes and paths", and the routes are in the `set/union` in `system.clj`
+- [ ] run the slice's own tests only (`clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'` — namespace symbols, not strings; strings match nothing and run zero tests)
 - [ ] If checks pass, commit with `feat: {slicename}` and set slice status to `Done`
