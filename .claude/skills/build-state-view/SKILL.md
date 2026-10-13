@@ -10,12 +10,6 @@ description: >
 
 # Build State View Slice
 
-> **TODO — placeholder installed by `init --build-kit`.** Study an existing stack's
-> build-state-view/SKILL.md (stacks/node, stacks/supabase, stacks/axon, or stacks/umadb,
-> under `templates/.claude/skills/`) for the level of detail expected, then rewrite
-> every section below for your stack's real conventions — file layout, naming, and
-> the actual framework/language idioms. Delete this callout once done.
-
 > Before doing anything else, read the slice definition from `.slices/{Context}/{slicename}/slice.json`.
 > This file is the **source of truth** for all fields, events, and metadata — never invent
 > fields not defined there. Keep this line verbatim; it applies to every stack.
@@ -153,8 +147,6 @@ From the slice definition, extract:
 
 ;; Routes (step 3.4)
 ```
-
-TODO — file layout, naming conventions, framework idioms, how the handler/projection/reactor is wired up.
 
 
 ## Step 3.1 - projections / views
