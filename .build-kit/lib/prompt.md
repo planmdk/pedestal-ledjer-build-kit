@@ -69,7 +69,7 @@ This is the build trigger. Setting `InProgress` and building are one atomic step
 
 5. **Verify against slice.json**: cross-check the implementation — every command field, event field, and specification in slice.json must appear in the code. No invented fields — if it is not in slice.json, it must not be in the code.
 
-6. Run quality checks (`clj -X:test :nses '[{slice namespace}]'`).
+6. Run the quality checks exactly as in step 5 of "Building a Slice" in `.build-kit/CLAUDE.md`: the slice's own tests, the system load check, then the full suite.
 
 7. If checks pass, commit all changes with message: `feat: [Slice Name]`.
 

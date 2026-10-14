@@ -21,8 +21,8 @@ description: >
 
 ## What an Automation Slice is
 
-One pattern only. Directory layout is flat - `src/{basepackage}/slices/{context}/{slicename}/slice.clj`, shared
-`src/{basepackage}/slices/events.clj` for the events. Directory names are the namespace segments with `-`
+One pattern only. Directory layout is flat - `src/{basepackage-path}/slices/{context}/{slicename}/slice.clj`, shared
+`src/{basepackage-path}/slices/events.clj` for the events. Directory names are the namespace segments with `-`
 replaced by `_` (namespace `...slices.understanding-eventsourcing.publish-cart.slice` lives in
 `.../slices/understanding_eventsourcing/publish_cart/slice.clj`).
 
@@ -106,7 +106,7 @@ with the fields `aggregateId`, `orderedProducts`, `totalPrice` and the INBOUND e
 
 ## Step 2 — the events - only if they don't already exist
 
-**Check `src/{basepackage}/slices/events.clj` first;** add any events which do not exist to this file, taken from:
+**Check `src/{basepackage-path}/slices/events.clj` first;** add any events which do not exist to this file, taken from:
 
 - all the to-do read model's `INBOUND` events
 - all the command's `OUTBOUND` events
@@ -123,7 +123,7 @@ and the names of its OUTBOUND events (e.g. "External Cart Published", "Welcome E
 A command with no side effect has no external dependencies.
 
 Every external dependency must already exist as a component under `:shared` in
-`src/{basepackage}/system.clj` (e.g. `[:shared :mailer]`). Pass it to the change function as an argument.
+`src/{basepackage-path}/system.clj` (e.g. `[:shared :mailer]`). Pass it to the change function as an argument.
 
 **If a dependency the command needs does not exist, do not create it and do not stub it.** Invoke
 `/request-feedback` naming the dependency that is missing and what the command needs it for. This marks
@@ -283,7 +283,7 @@ External dependencies come **before** `payload`, so `l/gwt` can pass them in tes
 
 ## Step 5 — wire it into the system
 
-In `src/{basepackage}/system.clj`:
+In `src/{basepackage-path}/system.clj`:
 
 1. Require the slice: `[{basepackage}.slices.{context}.{slicename}.slice :as slice.{context}.{slicename}]`
 2. Add the component under `:automations` in `base-system`:
@@ -350,7 +350,7 @@ Automation scenarios in `specifications[]` read "given events, then command (or 
 the change function (part 2), with `:then` being the events the command results in — or on the view
 (part 1) when the scenario is about whether an item is on the to-do list at all.
 
-Create events using the event constructor functions in `src/{basepackage}/slices/events.clj`, avoid commands
+Create events using the event constructor functions in `src/{basepackage-path}/slices/events.clj`, avoid commands
 from other slices.
 
 ## Quality gate

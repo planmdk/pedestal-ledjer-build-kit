@@ -19,10 +19,10 @@ description: >
 ## What a State View Slice is
 
 One pattern only. Directory layout is flat:
-- `src/{basepackage}/slices/{context}/{slicename}/slice.clj`
-- `src/{basepackage}/slices/{context}/{slicename}/scion.cljs` for any client-side dynamic behaviour
-- `src/{basepackage}/slices/{context}/{slicename}/shared.cljc` for anything shared between the main slice code and the scion code
-- shared `src/{basepackage}/slices/events.clj` for the events
+- `src/{basepackage-path}/slices/{context}/{slicename}/slice.clj`
+- `src/{basepackage-path}/slices/{context}/{slicename}/scion.cljs` for any client-side dynamic behaviour
+- `src/{basepackage-path}/slices/{context}/{slicename}/shared.cljc` for anything shared between the main slice code and the scion code
+- shared `src/{basepackage-path}/slices/events.clj` for the events
 
 Directory names are the namespace segments with `-` replaced by `_` (namespace
 `...slices.understanding-eventsourcing.cart-items.slice` lives in
@@ -57,7 +57,7 @@ From the slice definition, extract:
 
 ## Step 2 - the events - only if it doesn't alread exist
 
-**Check `src/{basepackage}/slices/events.clj` first;** add any events which do not exist to this file, taken from:
+**Check `src/{basepackage-path}/slices/events.clj` first;** add any events which do not exist to this file, taken from:
 
 - all the readmodel's `INBOUND` dependencies
 - all the slice's `events`
@@ -409,8 +409,8 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
 - **Client-side behaviour** (only when the screen's description or comments call for it — show/hide,
   drag and drop, ...) is a scion:
   - in the page: `(h/raw-string (graft "{scion-name}" :prev-sibling {...opts}))`, placed directly after the element it acts on;
-  - in `src/{basepackage}/slices/{context}/{slicename}/scion.cljs`: a `(defmethod graft/scion "{scion-name}" [opts container] ...)`;
-  - in `src/{basepackage}/scions.cljs`: require the scion namespace, or it is never compiled to JavaScript.
+  - in `src/{basepackage-path}/slices/{context}/{slicename}/scion.cljs`: a `(defmethod graft/scion "{scion-name}" [opts container] ...)`;
+  - in `src/{basepackage-path}/scions.cljs`: require the scion namespace, or it is never compiled to JavaScript.
 
 ## Step 3.3 - Page handler Pedestal interceptor
 
@@ -473,7 +473,7 @@ A Pedestal interceptor map named `{slicename}-page-handler` that queries the vie
   It responds 404 when the session user doesn't own the entity.
 - `{path}` is described in "Routes and paths" below.
 
-**Wire the routes into the system**: in `src/{basepackage}/system.clj`, require the slice namespace as
+**Wire the routes into the system**: in `src/{basepackage-path}/system.clj`, require the slice namespace as
 `slice.{context}.{slicename}` and add `slice.{context}.{slicename}/routes` to the `set/union` of routes.
 
 ## Routes and paths
@@ -504,7 +504,7 @@ The **path** is resource-style. Decide it in this order:
      (`/recipes/unarchived`).
    - A change is a `POST` to the resource plus the command name, kebab-cased
      (`/recipes/:recipe-id/archive-recipe`). A change that creates the entity posts to `/{entities}`.
-4. **Collision check** — search the existing `routes` in `src/{basepackage}/slices/**/slice.clj` for the same
+4. **Collision check** — search the existing `routes` in `src/{basepackage-path}/slices/**/slice.clj` for the same
    path and verb. Depending on the router, a duplicate either stops Pedestal from starting or silently
    shadows one of the routes — and slice tests don't load `system.clj`, so they won't catch it. On a
    collision, add a suffix from the slice name.
@@ -539,7 +539,7 @@ Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions un
      })))
 ```
 
-Create events using the event constructor functions in `src/{basepackage}/slices/events.clj`, avoid commands from other slices.
+Create events using the event constructor functions in `src/{basepackage-path}/slices/events.clj`, avoid commands from other slices.
 
 Only the views are tested; the page function, page handler and routes are not.
 

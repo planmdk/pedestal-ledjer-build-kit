@@ -31,7 +31,7 @@ You work within **exactly ONE context at a time** — the one named in `.build-k
 10. The slice in the json is always true, the code follows what is defined in the json
 11. Slice is only 'Done' if business logic is implemented as defined in the JSON, APIs are implemented, all scenarios in JSON are implemented in code and it fulfills the slice.json. There must be no specification in json that has no equivalent in code.
 12. Make sure to write the ui-prompt.md as defined if defined in the skill
-13. Run quality checks — `clj -X:test :nses '[{slice namespace}]'`.
+13. Run the quality checks exactly as in step 5 of "Building a Slice" in `.build-kit/CLAUDE.md`: the slice's own tests, the system load check, then the full suite.
 14. If checks pass, commit ALL changes with message: `feat: [Slice Name]` and merge back to main as FF merge (update first)
 15. Update the PRD to set `status: Done` for the completed story in index.json **and** update the slice status on the eventmodelers board using the `update-slice-status` skill (or MCP if available).
 16. Append your progress to `progress.txt` after each step in the iteration.
@@ -87,8 +87,8 @@ Only update AGENTS.md if you have **genuinely reusable knowledge** that would he
 
 ## Quality Requirements
 
-- ALL commits must pass this project's quality checks (typecheck/compile, lint, test)
-- `clj -X:test`
+- ALL commits must pass this project's quality checks — step 5 of "Building a Slice" in `.build-kit/CLAUDE.md`
+  (the slice's own tests, the system load check, and no full-suite failures caused by the slice)
 - Do NOT commit broken code
 - Keep changes focused and minimal
 - Follow existing code patterns

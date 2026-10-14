@@ -1,10 +1,26 @@
 # Project Configuration
 
-Read events in `src/<base_package>/slices/events.clj` to understand the global structure.
+Read events in `src/{basepackage-path}/slices/events.clj` to understand the global structure.
+
+## The base namespace
+
+`{basepackage}` is this project's own namespace prefix, not a fixed value. Resolve it, in order:
+
+1. the namespace of `src/**/system.clj` without `.system` (`dk.planm.gastronak.system` → `dk.planm.gastronak`);
+2. the part before `.slices.` in the namespace of any existing slice.
+
+Never hardcode one. `{basepackage-path}` is the same prefix as a source path: `.` becomes `/` and `-` becomes
+`_` (`dk.planm.gastronak` → `dk/planm/gastronak`). The same `-` → `_` rule applies to every namespace segment
+below it: slice `add-item` in context `understanding-eventsourcing` is namespace
+`{basepackage}.slices.understanding-eventsourcing.add-item.slice` in
+`src/{basepackage-path}/slices/understanding_eventsourcing/add_item/slice.clj`.
 
 ## File Structure Constraints
 
-- **Strict Path Limitation**: if not instructed otherwise, only check `src/<base_package>/slices/{context}/{slicename}.clj[sc]?` and its test counterpart under `test/...`
+- **Strict Path Limitation**: if not instructed otherwise, only check the slice's own directory,
+  `src/{basepackage-path}/slices/{context}/{slicename}/` (`slice.clj`, `scion.cljs`, `shared.cljc`), its test
+  `test/{basepackage-path}/slices/{context}/{slicename}/slice_test.clj`, and the shared files the build skills
+  say to edit: `slices/events.clj`, `system.clj` and `scions.cljs`
 - **Slice Organization**: Each feature/domain should be organized as a separate slice
 
 ## Code Standards
@@ -20,7 +36,7 @@ Read events in `src/<base_package>/slices/events.clj` to understand the global s
 
 Slice names are kebab-cased and all lowercase characters, e.g. "Add item" becomes "add-item".
 
-**Coercion and dates**: the project provides `src/<base_package>/common/coercion.clj` with its one fixed time zone and the transformer every request value is coerced with. Every `DateTime` field is a `:time/instant`, read from and shown in that zone. See "The project's coercion namespace" in the `build-state-change` skill. It is project code: never create or change it while building a slice — if it is missing, the slice is `Blocked`.
+**Coercion and dates**: the project provides `src/{basepackage-path}/common/coercion.clj` with its one fixed time zone and the transformer every request value is coerced with. Every `DateTime` field is a `:time/instant`, read from and shown in that zone. See "The project's coercion namespace" in the `build-state-change` skill. It is project code: never create or change it while building a slice — if it is missing, the slice is `Blocked`.
 
 Do not change test files unless explicitly instructed, or the change brings the test in line with slice.json (e.g. step 4's field/spec diff).
 
@@ -50,22 +66,35 @@ When asked to build a slice, always follow this flow:
      - anything else (e.g. only `events`, or nothing at all) is a modelling error: invoke `/request-feedback` explaining that the slice has no command, read model or processor to build. Do not write any code for it.
 3. Invoke the matching skill and follow its instructions completely. Do not deviate.
 4. **Verify against slice.json**: After the skill completes, check that every command field, event field, and specification in slice.json appears in the implementation. No invented fields — if it is not in slice.json, it must not be in the code. This applies even when the slice was previously `Done` and reappears as `Planned` — never dismiss a mismatch as "already implemented" or harmless drift; diff slice.json against the code field by field and update the code to match every change.
-5. Run quality checks (`clojure -M:test`), then the slice tests only.
-6. If checks pass, commit with `feat: [Slice Name]` and set slice status to `Done`.
-
-After you are done, automatically run the tests for the slice that was edited.
+5. Run the quality checks, in this order:
+   1. **The slice's own tests** — `clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'`
+      (namespace symbols, not strings: strings match nothing and run zero tests). They must pass.
+   2. **The system loads** — `clojure -M -e "(require '{basepackage}.system)"`. This is the only check that
+      covers the slice's wiring in `system.clj`, which the slice tests never load. It must succeed.
+   3. **The full suite** — `clojure -X:test`. A failure is yours only if it is caused by what this slice
+      changed (e.g. an event in `events.clj` whose fields changed); fix the code, never another slice's test.
+      Any other failure was there before: record it in `progress.txt` and leave it alone.
+6. If checks 1 and 2 pass and the full suite has no failures caused by this slice, commit with
+   `feat: [Slice Name]` and set slice status to `Done`.
 
 ## Example Slice Structure
 
 ```
-src/main/java/<basePackage>/
-├── system.clj                               ← add slice's main namespace to the require, add slice's `routes` to the `set/union` in this namespace
+src/{basepackage-path}/
+├── system.clj                               ← add slice's main namespace to the require; add slice's `routes` to the `set/union`, or an automation's `component-map` under `:automations`
 ├── scions.cljs                              ← add slice's scion namespace to the require
+├── common/
+│   ├── coercion.clj                         ← project code, never changed by a slice (see "Coercion and dates")
+│   ├── interceptors.clj                     ← authenticated/authorized interceptors used in routes
+│   └── utils.clj                            ← `url-for-safe`, `->uuid`, ...
 ├── slices/
 │   ├── events.clj                           ← namespace containing every event in the system
-│   ├── {context}/
-│   │   ├── {slicename}/                     ← read, write and automation slices
+│   ├── {context}/                           ← `-` → `_`, e.g. understanding_eventsourcing
+│   │   ├── {slicename}/                     ← read, write and automation slices; `-` → `_`, e.g. add_item
 │   │   │   ├── slice.clj                    ← the main namespace: read models, commands, automations, routes, hiccup go here
 │   │   │   ├── scion.cljs                   ← frontend augmentation code (scions) for the slice, if any
 │   │   │   └── shared.cljc                  ← code shared between slice implementation and frontend, if any
+
+test/{basepackage-path}/
+└── slices/{context}/{slicename}/slice_test.clj
 ```

@@ -20,8 +20,8 @@ description: >
 
 ## What a State Change Slice is
 
-One pattern only. Directory layout is flat - `src/{basepackage}/slices/{context}/{slicename}/slice.clj`, shared
-`src/{basepackage}/slices/events.clj` for the events.
+One pattern only. Directory layout is flat - `src/{basepackage-path}/slices/{context}/{slicename}/slice.clj`, shared
+`src/{basepackage-path}/slices/events.clj` for the events.
 
 A state change slice consists of:
 
@@ -47,7 +47,7 @@ From the slice definition, extract:
 
 ## Step 2 - the events - only if it doesn't alread exist
 
-**Check `src/{basepackage}/slices/events.clj` first;** add event only if it does not exist there.
+**Check `src/{basepackage-path}/slices/events.clj` first;** add event only if it does not exist there.
 
 ```clojure
 (defevent {eventname}
@@ -192,7 +192,7 @@ as a server error instead of a field error.
 ### The project's coercion namespace
 
 Coercion of request values is project code, not slice code. The project provides it in
-`src/{basepackage}/common/coercion.clj`, required as `[{basepackage}.common.coercion :as coercion]`:
+`src/{basepackage-path}/common/coercion.clj`, required as `[{basepackage}.common.coercion :as coercion]`:
 
 | Var | What it is |
 |---|---|
@@ -410,9 +410,9 @@ Relevant interceptors may include:
 - `#'interceptors/authenticated-interceptor`
 - `#'interceptors/authorized-interceptor`
 
-Look up interceptors in `src/{basepackage}/common/interceptors.clj` when necessary.
+Look up interceptors in `src/{basepackage-path}/common/interceptors.clj` when necessary.
 
-**Wire the routes into the system**: in `src/{basepackage}/system.clj`, require the slice namespace as
+**Wire the routes into the system**: in `src/{basepackage-path}/system.clj`, require the slice namespace as
 `slice.{context}.{slicename}` and add `slice.{context}.{slicename}/routes` to the `set/union` of routes.
 
 ### Routes and paths
@@ -438,7 +438,7 @@ The **path** is resource-style. Decide it in this order:
      be decided from the model, keep the order of the fields in slice.json.
 3. **Suffix** — the command name, kebab-cased: `/carts/:cart-id/add-item`, `/recipes/:recipe-id/archive-recipe`.
    A command that creates the entity posts to `/{entities}` without a suffix.
-4. **Collision check** — search the existing `routes` in `src/{basepackage}/slices/**/slice.clj` for the same
+4. **Collision check** — search the existing `routes` in `src/{basepackage-path}/slices/**/slice.clj` for the same
    path and verb. Depending on the router, a duplicate either stops Pedestal from starting or silently
    shadows one of the routes — and slice tests don't load `system.clj`, so they won't catch it. On a
    collision, add a suffix from the slice name.
@@ -476,7 +476,7 @@ Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions un
      :then #"error message from the expected thrown error")))
 ```
 
-Create events using the event constructor functions in `src/{basepackage}/slices/events.clj`, avoid commands from other slices.
+Create events using the event constructor functions in `src/{basepackage-path}/slices/events.clj`, avoid commands from other slices.
 
 ## Quality gate
 
