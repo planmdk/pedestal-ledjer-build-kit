@@ -76,12 +76,20 @@ The same rules apply to every schema built from slice.json fields — events her
 | `Int`, `Integer`, `Long` | `:int` |
 | `Double`, `Decimal` | `:double` |
 | `Date` | `:time/local-date` |
-| `DateTime` | `:time/instant` — always; see "Dates, times and the project zone" in step 3.1 |
+| `DateTime` | `:time/instant` — always, read and shown in the project zone (see "The project's coercion namespace" in step 3.1) |
 | `Custom` | `[:map ...]` built from `subfields` with these same rules; `:map` if it has no subfields |
 
   A type not in the table gets the closest match, recorded as an assumption.
 - **`cardinality: "List"`** wraps the type in a vector: `[:vector :uuid]`.
 - **`optional: true`** marks the entry optional: `[:image {:optional true} :string]`.
+
+**Command schemas only** — because forms send nothing for an unticked checkbox or an empty list, these two get
+a default (`coercion/transformer` fills it in, see step 3.1):
+
+- `Boolean` → `[:done {:default false} :boolean]`
+- `cardinality: "List"` → `[:item-ids {:default []} [:vector :uuid]]`
+
+Event schemas never get defaults: events are checked, never decoded, so a default there does nothing.
 
 **Example slice.json event (abbreviated):**
 
@@ -176,77 +184,36 @@ The same rules apply to every schema built from slice.json fields — events her
     ...))
 ```
 
-**Always coerce with `coercion/transformer`** (see "Dates, times and the project zone" below). Form and path
-values arrive as strings, and it converts them all — numbers, UUIDs and booleans, and dates and date-times,
-which malli's `mt/string-transformer` alone does not. Never parse values in the handler before calling the
-change function (e.g. with `t/date`): a value that doesn't parse would then throw outside coercion, as a server
-error instead of a field error.
+**Always coerce with `coercion/transformer`** (see "The project's coercion namespace" below). Form and path
+values arrive as strings, and it turns them into the schema's types. Never parse values in the handler before
+calling the change function (e.g. with `t/date`): a value that doesn't parse would then throw outside coercion,
+as a server error instead of a field error.
 
-### Dates, times and the project zone
+### The project's coercion namespace
 
-The project has **one fixed time zone**, and every `DateTime` is a `:time/instant`:
+Coercion of request values is project code, not slice code. The project provides it in
+`src/{basepackage}/common/coercion.clj`, required as `[{basepackage}.common.coercion :as coercion]`:
 
-- Forms send `DateTime` fields from `<input type="datetime-local">` — a local date-time without a zone. It is
-  read as a time in the project zone and stored as an instant.
-- Pages show instants, and prefill `datetime-local` inputs, in the project zone.
-- `Date` fields are `:time/local-date`, sent from `<input type="date">`. No zone is involved.
+| Var | What it is |
+|---|---|
+| `coercion/zone` | The project's one fixed time zone, a `java.time.ZoneId` |
+| `coercion/transformer` | The malli transformer for every `m/coerce` of request values |
+| `coercion/instant->local-date-time` | An instant as a local date-time in `zone`, to the minute — for pages and `datetime-local` inputs |
 
-Both rules live in one namespace, `src/{basepackage}/common/coercion.clj`. **If it doesn't exist, create it
-exactly as below** — but never guess the zone: if the project's time zone isn't known, invoke
-`/request-feedback` asking for it, which marks the slice `Blocked`. The `:time/...` schemas must be in malli's
-default registry (`events.clj` sets it up with `malli.experimental.time/schemas`).
+What `coercion/transformer` does with form values, which the schema rules in step 2 rely on:
 
-```clojure
-(ns {basepackage}.common.coercion
-  "Coercion of request values, and the project's fixed time zone.
+- **Strings** become the schema's type — numbers, UUIDs, booleans, `:time/local-date`, and `:time/instant`.
+- **`:time/instant`** also accepts a local date-time without a zone (what `<input type="datetime-local">`
+  sends) and reads it in `zone`.
+- **Empty values (`""`) are dropped**, as if the input wasn't sent: an empty optional field is left out, and an
+  empty required field fails as a missing key.
+- **A checkbox's `"on"`** becomes `true`.
+- **A single value for a `[:vector ...]`** becomes a one-element vector.
+- **Missing keys with a `:default`** get the default.
 
-  Every DateTime field is a :time/instant. Forms send zone-less local
-  date-times (<input type=\"datetime-local\">); they are read and shown
-  in `zone`."
-  (:require
-   [malli.experimental.time.transform :as mett]
-   [malli.transform :as mt])
-  (:import
-   (java.time Instant LocalDateTime OffsetDateTime ZoneId)
-   (java.time.format DateTimeParseException)
-   (java.time.temporal ChronoUnit)))
-
-(def zone
-  "The project's fixed time zone."
-  (ZoneId/of "{project-zone}"))
-
-(defn- parse-or-nil
-  [parse s]
-  (try (parse s) (catch DateTimeParseException _ nil)))
-
-(defn- string->instant
-  "Decode an ISO instant, an offset date-time, or a local date-time in
-  `zone` to an Instant. Anything else is returned unchanged, so it
-  fails validation."
-  [x]
-  (if (string? x)
-    (or (parse-or-nil #(Instant/parse %) x)
-        (some-> (parse-or-nil #(OffsetDateTime/parse %) x) .toInstant)
-        (some-> (parse-or-nil #(LocalDateTime/parse %) x) (.atZone zone) .toInstant)
-        x)
-    x))
-
-(def transformer
-  "Use for every m/coerce of request values."
-  (mt/transformer
-   mt/string-transformer
-   {:name ::instant-in-zone
-    :decoders {:time/instant string->instant}}
-   (mett/time-transformer)))
-
-(defn instant->local-date-time
-  "The local date-time of instant in `zone`, to the minute — the value of
-  an <input type=\"datetime-local\">, and what pages show."
-  [^Instant instant]
-  (some-> instant (.atZone zone) .toLocalDateTime (.truncatedTo ChronoUnit/MINUTES)))
-```
-
-`{project-zone}` is an IANA zone id, e.g. `Europe/Copenhagen`. Never change `zone` as part of building a slice.
+**If the namespace doesn't exist, or lacks one of these vars, do not create or change it.** Invoke
+`/request-feedback` naming what is missing; this marks the slice `Blocked`. The same applies to the zone:
+never guess or change it while building a slice.
 
 **Example slice.json command (abbreviated)**:
 
@@ -521,6 +488,7 @@ Before considering the slice done:
 - [ ] No business rule exists in the handler that isn't traceable to slice.json's `description`/`comments`
 - [ ] Every business-rule `ex-info` has `{:type :command/rejected}` and a message written for the end user
 - [ ] The command is coerced with `coercion/transformer`, and no value is parsed in the handler first
+- [ ] Every `Boolean` and `List` field of the command schema has its `:default` (`false` / `[]`); no event schema has one
 - [ ] The path follows "Routes and paths", and the routes are in the `set/union` in `system.clj`
 - [ ] run the slice's own tests only (`clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'` — namespace symbols, not strings; strings match nothing and run zero tests)
 - [ ] If checks pass, commit with `feat: {slicename}` and set slice status to `Done`

@@ -389,9 +389,17 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
 
   - Input `name`s are the command's field names, kebab-cased — the change handler reads them from
     `:form-params`.
-  - `Date` fields are `<input type="date">`. `DateTime` fields are `<input type="datetime-local">`, prefilled
-    with `(coercion/instant->local-date-time instant)` — the project's fixed zone, see "Dates, times and the
-    project zone" in the `build-state-change` skill.
+  - Inputs per field type — these are the shapes `coercion/transformer` expects (see "The project's
+    coercion namespace" in the `build-state-change` skill):
+    - `Date`: `<input type="date">`.
+    - `DateTime`: `<input type="datetime-local">`, prefilled with `(coercion/instant->local-date-time instant)` —
+      the project's fixed zone.
+    - `Boolean`: a plain `<input type="checkbox" name="{field}">`. No `value` and no hidden "false" input: an
+      unticked checkbox sends nothing and the command's default makes it `false`.
+    - `cardinality: "List"`: one input per item, all with the same plain `name` — never `name="{field}[]"`.
+    - Optional fields: an empty input is fine, it is treated as not sent.
+    - `Custom` fields with `subfields` and lists of them have no form shape; if a screen needs one, invoke
+      `/request-feedback` instead of inventing one.
   - `__anti-forgery-token` is required on every form; without it Pedestal's CSRF protection rejects the post.
   - `{command}-errors` are the errors the change handler put in the flash (step 3.3): a map from field
     name to messages, with `:command/rejected` holding business-rule errors not tied to a field. Show
@@ -545,6 +553,7 @@ Before marking this slice as `Done`, verify the implementation against slice.jso
 - [ ] No extra query parameters or filter logic were added beyond what slice.json defines
 - [ ] No field names were assumed or guessed — if a field is not in slice.json, it is not in the code
 - [ ] If there is a screen: the page shows the screen's fields, has a form for every command on the read model's screens, and every form has the `__anti-forgery-token` input
+- [ ] Every form input follows "Inputs per field type" — plain checkboxes, repeated plain names for lists, `date`/`datetime-local` for dates
 - [ ] If there is a screen: the path follows "Routes and paths", and the routes are in the `set/union` in `system.clj`
 - [ ] If there is a scion: it is required in `scions.cljs`
 - [ ] run the slice's own tests only (`clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'` — namespace symbols, not strings; strings match nothing and run zero tests)

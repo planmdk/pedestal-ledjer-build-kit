@@ -20,7 +20,7 @@ Read events in `src/<base_package>/slices/events.clj` to understand the global s
 
 Slice names are kebab-cased and all lowercase characters, e.g. "Add item" becomes "add-item".
 
-**Dates and times**: the project has one fixed time zone, defined in `src/<base_package>/common/coercion.clj`. Every `DateTime` field is a `:time/instant`, read from and shown in that zone; every request value is coerced with `coercion/transformer`. See "Dates, times and the project zone" in the `build-state-change` skill. Never guess the zone or change it while building a slice.
+**Coercion and dates**: the project provides `src/<base_package>/common/coercion.clj` with its one fixed time zone and the transformer every request value is coerced with. Every `DateTime` field is a `:time/instant`, read from and shown in that zone. See "The project's coercion namespace" in the `build-state-change` skill. It is project code: never create or change it while building a slice — if it is missing, the slice is `Blocked`.
 
 Do not change test files unless explicitly instructed, or the change brings the test in line with slice.json (e.g. step 4's field/spec diff).
 
