@@ -1,2 +1,3 @@
-.eventmodelers/
+**/.eventmodelers/*
+!**/.eventmodelers/install-manifest.json
 .claude/settings.local.json

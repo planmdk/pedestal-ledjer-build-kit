@@ -1,0 +1,17 @@
+{
+  "stack": "pedestal-umadb",
+  "version": "1.0.101",
+  "global": false,
+  "skills": [
+    "connect",
+    "learn-eventmodelers-api",
+    "load-slice",
+    "request-feedback",
+    "update-slice-status",
+    "build-automation",
+    "build-state-change",
+    "build-state-view"
+  ],
+  "claudeExtras": [],
+  "mcpRegistered": false
+}
