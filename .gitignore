@@ -8,3 +8,5 @@
 .shadow-cljs/
 /target
 /public/js/cljs-runtime
+/public/js/scions.js
+/public/js/manifest.edn
