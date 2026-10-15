@@ -21,14 +21,6 @@
     :enter (fn [ctx]
              (assoc ctx :event-store event-store))}))
 
-(defn app-config-interceptor
-  "Makes the app config available as :app-config on the context."
-  [app-config]
-  (interceptor/interceptor
-   {:name ::app-config
-    :enter (fn [ctx]
-             (assoc ctx :app-config app-config))}))
-
 (defn- build-page
   [h]
   (h/page [:html {:lang "en"}
@@ -56,20 +48,18 @@
 
 (def authenticated-interceptor
   "Lets authenticated requests through. Others are redirected to the
-  login page: the route named by [:auth :login-route] in config.edn.
+  route named :user-management/login-page.
 
-  The scaffold has no login slice. Until a route with that name exists,
-  unauthenticated requests get a plain 401."
+  The scaffold has no login slice: model login on the board. Until a
+  route with that name exists, unauthenticated requests get a plain 401."
   (interceptor/interceptor
    {:name ::authenticated?
     :enter (fn [context]
              (if (authenticated? context)
                context
                (let [request (:request context)
-                     login-route (get-in context [:app-config :auth :login-route])
-                     login-url (when login-route
-                                 (utils/url-for-safe login-route
-                                                     {:query-params {:next (:uri request)}}))]
+                     login-url (utils/url-for-safe :user-management/login-page
+                                                   {:query-params {:next (:uri request)}})]
                  (if login-url
                    (respond-with context 303 {"location" login-url} "Unauthenticated")
                    (respond-with context 401 "Unauthenticated")))))}))

@@ -34,25 +34,21 @@
 
 (deftest authenticated-interceptor
   (let [login-routes (route/expand-routes
-                      #{["/login" :get (fn [_] {:status 200}) :route-name :test/login]})
-        config {:auth {:login-route :test/login}}]
+                      #{["/login" :get (fn [_] {:status 200}) :route-name :user-management/login-page]})]
     (try
       (testing "an authenticated request is let through"
-        (let [context {:app-config config
-                       :request {:uri "/x" :session {:user-id (random-uuid)}}}]
+        (let [context {:request {:uri "/x" :session {:user-id (random-uuid)}}}]
           (is (= context (enter interceptors/authenticated-interceptor context)))))
 
       (testing "without a login route in the routing table, the response is 401"
         (utils/clear-routing-table)
         (is (= 401 (status (enter interceptors/authenticated-interceptor
-                                  {:app-config config
-                                   :request {:uri "/x"}})))))
+                                  {:request {:uri "/x"}})))))
 
-      (testing "otherwise it redirects to the configured login route, remembering where to go next"
+      (testing "otherwise it redirects to the login page, remembering where to go next"
         (utils/register-routing-table login-routes)
         (let [context (enter interceptors/authenticated-interceptor
-                             {:app-config config
-                              :request {:uri "/x"}})]
+                             {:request {:uri "/x"}})]
           (is (= 303 (status context)))
           (is (= "/login?next=%2Fx" (get-in context [:response :headers "location"])))))
 
