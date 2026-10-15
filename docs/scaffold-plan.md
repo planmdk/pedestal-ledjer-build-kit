@@ -7,12 +7,12 @@ repository describes what was actually done.
 
 ## Context
 
-| What | Where |
-|---|---|
-| This build kit | `~/Projekter/em-studio/build-kits/pedestal-umadb` |
-| Reference project the kit is modelled on | `~/Projekter/gastronak` |
-| Event sourcing library (`defevent`, `defview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer` |
-| Sibling kit with a working scaffold, for shape only (Java/Spring) | `~/Projekter/em-studio/build-kits/umadb` |
+| What                                                                      | Where                                             |
+|---------------------------------------------------------------------------|---------------------------------------------------|
+| This build kit                                                            | `~/Projekter/em-studio/build-kits/pedestal-umadb` |
+| Reference project the kit is modelled on                                  | `~/Projekter/gastronak`                           |
+| Event sourcing library (`defevent`, `defview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer`                              |
+| Sibling kit with a working scaffold, for shape only (Java/Spring)         | `~/Projekter/em-studio/build-kits/umadb`          |
 
 A build kit is installed into a project by the eventmodelers CLI. It consists of:
 
@@ -90,21 +90,21 @@ namespace prefix (see decision D1).
 
 ## Proposed files
 
-| File | Based on (gastronak, unless stated) |
-|---|---|
-| `deps.edn` | `deps.edn`, trimmed (item 9) |
-| `mise.toml` | Java, Clojure and Node (`node` is needed by the `.build-kit` runtime) |
-| `docker-compose.yml` | `umadb/umadb` with a **pinned** version and port 50051 — see pitfalls |
-| `resources/config.edn` | `resources/config.edn`, trimmed to webserver + UmaDB host/port |
-| `resources/logback.xml`, `test-resources/logback-test.xml` | same files |
-| `src/{basepackage-path}/system.clj` | `system.clj`, with no slices |
-| `src/{basepackage-path}/main.clj` | new: start the `:prod` named system |
-| `src/{basepackage-path}/common/{coercion,event_store,interceptors,utils}.clj` | items 4–7 |
-| `src/{basepackage-path}/slices/events.clj` | item 3 |
-| `test/{basepackage-path}/common/coercion_test.clj` | item 4 |
-| `test/{basepackage-path}/system_test.clj` | new: the system starts and stops with the in-memory store |
-| `README.md` | replace the placeholder: start UmaDB, run, test, how slices are built |
-| if D3: `shadow-cljs.edn`, `package.json`, `src/{basepackage-path}/scions.cljs`, `common/grafter.clj` | same files, `scions.cljs` without gastronak's drag-and-drop scions |
+| File                                                                                                 | Based on (gastronak, unless stated)                                   |
+|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| `deps.edn`                                                                                           | `deps.edn`, trimmed (item 9)                                          |
+| `mise.toml`                                                                                          | Java, Clojure and Node (`node` is needed by the `.build-kit` runtime) |
+| `docker-compose.yml`                                                                                 | `umadb/umadb` with a **pinned** version and port 50051 — see pitfalls |
+| `resources/config.edn`                                                                               | `resources/config.edn`, trimmed to webserver + UmaDB host/port        |
+| `resources/logback.xml`, `test-resources/logback-test.xml`                                           | same files                                                            |
+| `src/{basepackage-path}/system.clj`                                                                  | `system.clj`, with no slices                                          |
+| `src/{basepackage-path}/main.clj`                                                                    | new: start the `:prod` named system                                   |
+| `src/{basepackage-path}/common/{coercion,event_store,interceptors,utils}.clj`                        | items 4–7                                                             |
+| `src/{basepackage-path}/slices/events.clj`                                                           | item 3                                                                |
+| `test/{basepackage-path}/common/coercion_test.clj`                                                   | item 4                                                                |
+| `test/{basepackage-path}/system_test.clj`                                                            | new: the system starts and stops with the in-memory store             |
+| `README.md`                                                                                          | replace the placeholder: start UmaDB, run, test, how slices are built |
+| if D3: `shadow-cljs.edn`, `package.json`, `src/{basepackage-path}/scions.cljs`, `common/grafter.clj` | same files, `scions.cljs` without gastronak's drag-and-drop scions    |
 
 ## Not to copy from gastronak
 
@@ -113,6 +113,8 @@ mailer, datalevin, NATS, embeddings, OpenTelemetry, the `infrastructure/` direct
 `design/`, `dev/` helpers, and every slice.
 
 ## Decisions to make
+
+**My general rule of thumb:** This is a kit for me to quickly spin up new SaaS projects, and needs to be relatively feature-complete.
 
 **D1. The scaffold's namespace.** The `umadb` kit uses a fixed package (`io.umadb.quickstart`) and the
 base-namespace rule picks it up from the code, so no install-time placeholder is needed. Proposal:
@@ -129,14 +131,20 @@ redirects to `:user-management/login-page`. The scaffold has no login slice. Opt
 - ship the interceptor with a configurable login route and no login slice — the board would then model
   login as ordinary slices.
 
+**D2. My decision:** ship the interceptor with a configurable login route and no login slice — the board would then model login as ordinary slices.
+
 **D3. Scions / ClojureScript.** `build-state-view` writes scions into `scion.cljs` and requires them in
 `scions.cljs`. Including them costs `shadow-cljs.edn`, `package.json`, `scions.cljs`, the grafter
 component and interceptor, and a JS build step. Leaving them out means changing the skill to "only if
 the project has `scions.cljs`".
 
+**D3. My decision:** Add Scions / ClojureScript to the build-kit
+
 **D4. The time zone.** The coercion namespace needs one fixed zone. Either the scaffold ships with a
 default (and `README.md` says to change it), or it ships with a value that fails loudly until set. The
 skills already say: never guess or change the zone while building a slice.
+
+**D4. My decision:** Ship with a value that fails loudly until set, and add a note in the README to set it.
 
 **D5. Where the UmaDB store lives.** It is gastronak's `src/dk/planm/ledjer/store/umadb.clj`, with its
 comparison test `test/dk/planm/ledjer/store/umadb_test.clj`; ledjer itself only has
@@ -144,10 +152,12 @@ comparison test `test/dk/planm/ledjer/store/umadb_test.clj`; ledjer itself only 
 project gets it from the dependency; copying it into the scaffold duplicates it per project.
 Recommendation: move it into ledjer, then depend on that sha.
 
+**D5. My decision:** This build kit should actually be about pedestal + ledjer, not strictly UmaDB, so we should not add the umadb dependency. I have moved the store dependency out of gastronak and into ledjer though.
+
 ## How to verify the scaffold
 
 1. In a copy of the scaffold, the three quality checks in contract item 10 pass.
-2. Start UmaDB and run the app; `GET /` answers (add a trivial route or a 404 check).
+2. Run the app; `GET /` answers (add a trivial route or a 404 check).
 3. Build one slice of each type into it with the kit, e.g. from the demo board slices in
    `.build-kit/.slices/Understanding Eventsourcing/` (`additem` = state change, `cartitems` = state
    view with a screen, `publishcart` = automation). Each must reach `Done` without the agent creating
@@ -169,8 +179,6 @@ Recommendation: move it into ledjer, then depend on that sha.
 - **`mett/time-transformer`'s `formats` argument** doesn't change its parsers (they always fall back to
   the defaults); per-schema `:formatter` properties do. That is why the coercion namespace has its own
   `:time/instant` decoder.
-- **`umadb/umadb:latest` moves.** Gastronak's `doc/running-locally.md`: 0.7.8 rejects subscribing
-  through `read()` and needs umadb-java-client 0.7's `subscribe()`. Pin the image version.
 - **Gastronak's full suite has a pre-existing failure** in `login` (`login-user-change`, "correct
   password + email": no `user-session-created` event is appended). Not caused by the kit work; it is
   why step 5 only requires the slice's own tests and the system load check to pass.
