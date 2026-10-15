@@ -1,0 +1,9 @@
+{:webserver {:service-map {:join? false
+                           :port 8080
+                           :dev-mode #profile {:default false
+                                               :dev true
+                                               :test true}}}
+ ;; The route name `authenticated-interceptor` redirects unauthenticated requests to.
+ ;; The scaffold has no login slice: model login on the board, then make sure the page's
+ ;; route name matches this value.
+ :auth {:login-route :user-management/login-page}}
