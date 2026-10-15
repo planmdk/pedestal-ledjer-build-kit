@@ -133,6 +133,10 @@ redirects to `:user-management/login-page`. The scaffold has no login slice. Opt
 
 **D2. My decision:** ship the interceptor with a configurable login route and no login slice — the board would then model login as ordinary slices.
 
+**D2. Revised (agreed):** no configurable login route. `authenticated-interceptor` redirects to the route
+named `:user-management/login-page`, as the skills say; the board models that page. Until a route with that
+name exists the interceptor answers a plain 401. No `:auth` in `config.edn`, no app-config interceptor.
+
 **D3. Scions / ClojureScript.** `build-state-view` writes scions into `scion.cljs` and requires them in
 `scions.cljs`. Including them costs `shadow-cljs.edn`, `package.json`, `scions.cljs`, the grafter
 component and interceptor, and a JS build step. Leaving them out means changing the skill to "only if

@@ -1,5 +1,6 @@
 {:webserver {:service-map {:join? false
-                           :port 8080
+                           :port #profile {:default 8080
+                                    :test 0}
                            :dev-mode #profile {:default false
                                                :dev true
                                                :test true}}}}

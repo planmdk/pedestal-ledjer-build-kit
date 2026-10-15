@@ -1,5 +1,19 @@
 (ns quickstart.common.scion-utils)
 
+(defn mark-initialized
+  "Mark the container of a scion as initialized.
+
+  A scion calls this on its container when it has set itself up. The
+  `reinitialize-scions` scion uses the mark to find scions in DOM
+  added after the page loaded (e.g. by `morph-html-into-document`)
+  that have not been set up yet."
+  [^js container]
+  (set! (.-initialized container) true))
+
+(defn initialized?
+  [^js container]
+  (boolean (.-initialized container)))
+
 (defn add-class
   [subjects class]
   (doseq [subject subjects]
