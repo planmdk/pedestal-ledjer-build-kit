@@ -197,3 +197,23 @@ copied verbatim with no substitution, and `docs/` at the kit root is not copied 
   why step 5 only requires the slice's own tests and the system load check to pass.
 - **Ledjer queries are validated.** A `nil` tag value or a tag none of the event types have throws;
   `"*"` matches any value.
+
+## Verification result (2026-10-15)
+
+Run in a copy of the scaffold (`/tmp/pedestal-umadb-verify`) with `additem`, `cartitems` and `publishcart` planned:
+
+- Quality checks on the empty scaffold: coercion test, `(require 'quickstart.system)` and `clojure -X:test`
+  (9 tests, 38 assertions) pass. `GET /` answers 404; `/js/scions.js` is served after the scions build.
+- `additem` (state change) and `cartitems` (state view with screen): `Done`. `publishcart` (automation):
+  `Blocked`, as expected — no `[:shared ...]` publisher component.
+- No infrastructure was created. The agent changed only `slices/events.clj`, `system.clj` (slice wiring) and
+  the slices' own files, plus `progress.txt` and `.build-kit/AGENTS.md`.
+- Full suite after the three slices: 11 tests, 46 assertions, 0 failures. The system loads.
+
+Findings:
+
+- The `add-item` route has no `authenticated-interceptor`: `build-state-change` says routes "may include" it,
+  while `build-state-view` says it is always included. The skills should agree.
+- Not exercised: `DateTime` fields (the zone is unset, so a slice with one should end `Blocked`), scions, and
+  `authorized-interceptor` inside a built slice.
+- The CLI added `claude = "latest"` to the project's `mise.toml` in the copy; that did not come from the kit.
