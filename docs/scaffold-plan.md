@@ -213,7 +213,7 @@ Run in a copy of the scaffold (`/tmp/pedestal-umadb-verify`) with `additem`, `ca
 Findings:
 
 - The `add-item` route has no `authenticated-interceptor`: `build-state-change` says routes "may include" it,
-  while `build-state-view` says it is always included. The skills should agree.
+  while `build-state-view` says it is always included. Fixed: `build-state-change` now always includes it.
 - Not exercised: `DateTime` fields (the zone is unset, so a slice with one should end `Blocked`), scions, and
   `authorized-interceptor` inside a built slice.
 - The CLI added `claude = "latest"` to the project's `mise.toml` in the copy; that did not come from the kit.

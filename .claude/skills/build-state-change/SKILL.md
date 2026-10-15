@@ -400,15 +400,26 @@ A set of routes with one entry, in the Pedestal route syntax:
 ```clojure
 (def routes
   #{["/carts/:cart-id/add-item" :post
-     [;; ... other interceptors (see below)
+     [#'interceptors/authenticated-interceptor
+      ;; authorized-interceptor, see below
       #'add-item-change-handler]
      :route-name :understanding-eventsourcing/add-item]})
 ```
 
-Relevant interceptors may include:
+- `#'interceptors/authenticated-interceptor` is **always included**, first in the chain. A change route without
+  it lets anyone write events.
+- Add `interceptors/authorized-interceptor` when the command changes one entity owned by a user — i.e. the
+  entity's creation event has both the entity's id and `user-id` as tags. It responds 404 when the session
+  user doesn't own the entity. It takes the same arguments as in step 3.4 of `build-state-view`:
 
-- `#'interceptors/authenticated-interceptor`
-- `#'interceptors/authorized-interceptor`
+```clojure
+(interceptors/authorized-interceptor
+ :event-type (ev/{creation-event})
+ :entity-id-key :{id-field}
+ :entity-id-path [:request :path-params :{id-field}])
+```
+
+  A command that creates the entity has nothing to be authorized against yet: authenticated only.
 
 Look up interceptors in `src/{basepackage-path}/common/interceptors.clj` when necessary.
 
@@ -489,6 +500,6 @@ Before considering the slice done:
 - [ ] Every business-rule `ex-info` has `{:type :command/rejected}` and a message written for the end user
 - [ ] The command is coerced with `coercion/transformer`, and no value is parsed in the handler first
 - [ ] Every `Boolean` and `List` field of the command schema has its `:default` (`false` / `[]`); no event schema has one
-- [ ] The path follows "Routes and paths", and the routes are in the `set/union` in `system.clj`
+- [ ] The path follows "Routes and paths", the route has `authenticated-interceptor`, and the routes are in the `set/union` in `system.clj`
 - [ ] run the slice's own tests only (`clojure -X:test :nses '[{basepackage}.slices.{context}.{slicename}.slice-test]'` — namespace symbols, not strings; strings match nothing and run zero tests)
 - [ ] If checks pass, commit with `feat: {slicename}` and set slice status to `Done`
