@@ -154,6 +154,15 @@ Recommendation: move it into ledjer, then depend on that sha.
 
 **D5. My decision:** This build kit should actually be about pedestal + ledjer, not strictly UmaDB, so we should not add the umadb dependency. I have moved the store dependency out of gastronak and into ledjer though.
 
+**D5. Consequences (agreed):** the scaffold depends on ledjer `core` only (`:deps/root "core"`) and uses
+the in-memory store. No `ledjer-umadb`, `umadb-java-client` or `deed-core` in `deps.edn`, no
+`docker-compose.yml`, and `config.edn` has no UmaDB host/port. `event_store.clj` builds the in-memory
+store; the README says how to add `ledjer-umadb` (same sha, `:deps/root "umadb"`) for persistence. Items
+7–9 and the proposed-files table above are amended accordingly.
+
+**D1. Decision (agreed):** `quickstart`. Checked the eventmodelers CLI (v1.0.148): `templates/root/` is
+copied verbatim with no substitution, and `docs/` at the kit root is not copied into projects.
+
 ## How to verify the scaffold
 
 1. In a copy of the scaffold, the three quality checks in contract item 10 pass.
