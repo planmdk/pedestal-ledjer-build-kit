@@ -1,5 +1,5 @@
 {
-  "stack": "pedestal-umadb",
+  "stack": "pedestal-ledjer",
   "version": "1.0.101",
   "global": false,
   "skills": [

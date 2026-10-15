@@ -1,18 +1,18 @@
-# Starter scaffold for the pedestal-umadb build kit — working notes
+# Starter scaffold for the pedestal-ledjer build kit — working notes
 
 Self-contained notes for building the kit's **starter scaffold**: the minimal project a new
-`pedestal-umadb` project starts from. Written so the work can be picked up without the session
+`pedestal-ledjer` project starts from. Written so the work can be picked up without the session
 that produced it. Check `git log` and `git status` first — this document describes intent, the
 repository describes what was actually done.
 
 ## Context
 
-| What                                                                      | Where                                             |
-|---------------------------------------------------------------------------|---------------------------------------------------|
-| This build kit                                                            | `~/Projekter/em-studio/build-kits/pedestal-umadb` |
-| Reference project the kit is modelled on                                  | `~/Projekter/gastronak`                           |
-| Event sourcing library (`defevent`, `defview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer`                              |
-| Sibling kit with a working scaffold, for shape only (Java/Spring)         | `~/Projekter/em-studio/build-kits/umadb`          |
+| What                                                                      | Where                                              |
+|---------------------------------------------------------------------------|----------------------------------------------------|
+| This build kit                                                            | `~/Projekter/em-studio/build-kits/pedestal-ledjer` |
+| Reference project the kit is modelled on                                  | `~/Projekter/gastronak`                            |
+| Event sourcing library (`defevent`, `defview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer`                               |
+| Sibling kit with a working scaffold, for shape only (Java/Spring)         | `~/Projekter/em-studio/build-kits/umadb`           |
 
 A build kit is installed into a project by the eventmodelers CLI. It consists of:
 
@@ -35,7 +35,7 @@ scaffold must be laid out (`templates/root/`?) and whether anything at the kit r
   handlers, routes, error handling and coercion.
 - `.build-kit/CLAUDE.md` routes slices on `sliceType`, defines the base namespace, and defines the
   quality checks (step 5).
-- The install manifest says `"stack": "pedestal-umadb"`; `.gitignore` now lets it be tracked while
+- The install manifest says `"stack": "pedestal-ledjer"`; `.gitignore` now lets it be tracked while
   both `.eventmodelers/config.json` files (credentials) stay ignored.
 - Gastronak got the reference implementation of the coercion namespace (commit `4465eee`).
 
@@ -200,7 +200,7 @@ copied verbatim with no substitution, and `docs/` at the kit root is not copied 
 
 ## Verification result (2026-10-15)
 
-Run in a copy of the scaffold (`/tmp/pedestal-umadb-verify`) with `additem`, `cartitems` and `publishcart` planned:
+Run in a copy of the scaffold (`/tmp/pedestal-ledjer-verify`) with `additem`, `cartitems` and `publishcart` planned:
 
 - Quality checks on the empty scaffold: coercion test, `(require 'quickstart.system)` and `clojure -X:test`
   (9 tests, 38 assertions) pass. `GET /` answers 404; `/js/scions.js` is served after the scions build.
