@@ -1,6 +1,7 @@
 **/.eventmodelers/*
 !**/.eventmodelers/install-manifest.json
 .claude/settings.local.json
+node_modules/
 .cpcache/
 .lsp/.cache
 .clj-kondo/.cache
