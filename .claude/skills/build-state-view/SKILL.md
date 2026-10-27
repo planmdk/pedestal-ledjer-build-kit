@@ -4,8 +4,9 @@ authors:
   - Matthias Varberg Ingesman
 description: >
   Use when implementing a new read slice / projection from a slice.json event model in this project.
-  One established pattern: Always use the Ledjer library's `defview` macro. There is exactly one
-  supported style - do not offer alternatives.
+  Two view kinds, both from the Ledjer library: `defview` (the default) and `defpersistedview` (only
+  for views that process many events or need advanced querying). Always use one of these macros -
+  do not offer other alternatives.
 ---
 
 # Build State View Slice
@@ -18,7 +19,7 @@ description: >
 
 ## What a State View Slice is
 
-One pattern only. Directory layout is flat:
+Directory layout is flat:
 - `src/{basepackage-path}/slices/{context}/{slicename}/slice.clj`
 - `src/{basepackage-path}/slices/{context}/{slicename}/scion.cljs` for any client-side dynamic behaviour
 - `src/{basepackage-path}/slices/{context}/{slicename}/shared.cljc` for anything shared between the main slice code and the scion code
@@ -40,7 +41,7 @@ All this goes into the `slice.clj` file.
 
 **Optionally** a `scion.cljs` file which contains client-side scripts for dynamic page functionality (think Javascript, but using Clojurescript instead). Code that is usable in both `slice.clj` and `scion.cljs` is put in `shared.cljc`, making it available in both settings.
 
-The page handler interceptor `{slicename}-page-handler` uses the defined `defview`'s to get the data, then pass that data to the `{slicename}-page` function, which returns the hiccup that is put in the response body from the page handler.
+The page handler interceptor `{slicename}-page-handler` uses the defined views (`defview`s, or the accumulators of `defpersistedview`s) to get the data, then pass that data to the `{slicename}-page` function, which returns the hiccup that is put in the response body from the page handler.
 
 ## Step 1 — Read the slice.json
 
@@ -141,6 +142,8 @@ From the slice definition, extract:
    [{basepackage}.slices.events :as ev]
    [dk.planm.ledjer :as l]
    [dk.planm.ledjer.event :as le]
+   [dk.planm.ledjer.protocols :as p] ;; persisted views only
+   [donut.system :as ds]             ;; persisted views only
    [huff2.core :as h]
    [io.pedestal.http.csrf :as csrf]
    [io.pedestal.http.response :refer [respond-with]]
@@ -159,9 +162,36 @@ From the slice definition, extract:
 Remove requires the slice ends up not using.
 
 
-## Step 3.1 - projections / views
+## Step 3.0 - which kind of view
 
-Exactly one pattern: Each readmodel in slice.json becomes a `defview` from ledjer.
+Each readmodel in slice.json becomes one view from ledjer. **Default to `defview`.** Use
+`defpersistedview` only when at least one of these holds:
+
+- the view processes a lot of events, e.g. from many different entities, so re-reducing them on every
+  query is too expensive
+- the view must support advanced querying over its data, e.g. search, filtering, sorting, paging
+
+If slice.json or its comments don't say so, use `defview`. If you pick `defpersistedview`, record why in
+`progress.txt`.
+
+A persisted view differs from a normal view in three ways:
+
+1. It uses a subscription under the hood, keeping its accumulator up to date as events arrive.
+2. It does **not** support runtime tag-bindings: it always reduces every event of its types (narrowed only by
+   tag-bindings written in the `defpersistedview` itself). Restrict by user, id etc. when *querying* the
+   accumulator instead.
+3. It has its own lifecycle, like an automation: it is started and closed as a donut.system component.
+
+Because of this it is not called with tag-bindings and does not return a value. You `deref` it to get at the
+underlying **persisted accumulator**, which you query with whatever API the concrete database or data
+structure has. Ledjer promotes no particular accumulator, as they are highly application-specific.
+
+- `defview` → Step 3.1
+- `defpersistedview` → Step 3.1p (and the `p` variants 3.3p and 3.5p)
+
+Steps 3.2 and 3.4 are the same for both.
+
+## Step 3.1 - projections / views (`defview`)
 
 Base pattern is this:
 
@@ -337,10 +367,127 @@ is queried by `cartId` (the cart page's path) but not by `itemId`, so it has man
   )
 ```
 
+## Step 3.1p - persisted views (`defpersistedview`)
+
+A persisted view has two parts: the `defpersistedview` with its reducers, and a **persisted accumulator**.
+
+### The view
+
+Same binding pairs as `defview`, but there is **no initial acc**: the accumulator is passed in when the view
+is started.
+
+```clojure
+(l/defpersistedview {readmodel}
+  (ev/{event1})
+  (fn {event1}-reducer
+    [acc event]
+    (p/-tx-append acc [:put (:{id-field} (le/payload event)) {...}]))
+
+  (ev/{event2})
+  (fn {event2}-reducer
+    [acc event]
+    (p/-tx-append acc [:delete (:{id-field} (le/payload event))]))
+
+  ;; ... one reducer per INBOUND event, as for defview
+  )
+```
+
+(`p` is `dk.planm.ledjer.protocols`.)
+
+- Every INBOUND event type gets exactly one reducer, as for `defview`. A missing reducer, or a throwing one,
+  fails the view (`:phase :reduce`); events are never skipped.
+- Reducers do **not return a new acc**: they call `(p/-tx-append acc op)` for their side effect, and the
+  return value is ignored. `op` is whatever the accumulator understands. **No IO in reducers** - the ops are
+  committed in batches by the view (every 64 events or 200 ms by default).
+- Build the ops from the **INBOUND** events and the readmodel's fields just as for `defview` (including
+  `mapping`). The specifications define any special requirements.
+- Calling `({readmodel} event-store acc & opts)` starts the view and returns a handle. `@handle` gives `acc`
+  (and rethrows the view's failure, if it has failed); `(.close handle)` flushes and closes it. Options
+  (`:max-size`, `:max-ms`, `:commit-retries`, `:commit-backoff-ms`, `:on-error`) are rarely needed.
+
+### The accumulator
+
+Implement `dk.planm.ledjer.protocols/PersistedAccumulator` for the application's concrete store (a database,
+a search index, ...) in `src/{basepackage-path}/slices/{context}/{slicename}/slice.clj`, together with a
+constructor `new-{readmodel}-acc`. Choose the store from the project's existing dependencies and the querying
+the read model needs. If there is no suitable one, invoke `/request-feedback` instead of inventing a
+dependency.
+
+```clojure
+(defn new-{readmodel}-acc
+  [{dependencies, e.g. a datasource}]
+  (let [pending-ops (atom [])]
+    (reify
+      p/PersistedAccumulator
+      (-sequence-number [_]
+        ;; The sequence number last passed to -tx-commit, or nil if fresh.
+        ;; Must be read from the store itself, so it survives restarts.
+        )
+      (-tx-append [this op]
+        ;; Buffer op. Must not do IO.
+        (swap! pending-ops conj op)
+        this)
+      (-tx-commit [_ sequence-number]
+        ;; Atomically write the buffered ops AND sequence-number to the store.
+        ;; Once this returns the data must be readable and -sequence-number
+        ;; must return sequence-number. If it throws, leave the buffered ops
+        ;; intact: it is retried with the same sequence-number.
+        ;; Clear the buffer only after success.
+        )
+      (-reset [this]
+        ;; Reset to an empty state, including the sequence number. Return this.
+        )
+
+      ;; The query API: methods, or e.g. clojure.lang.IFn / a protocol of your own.
+      )))
+```
+
+- The sequence number is stored **together with** the data, in the same transaction: on restart the view
+  resumes after it. A fresh accumulator returns `nil` and the view starts from the first event.
+- If the accumulator holds resources, implement `java.lang.AutoCloseable`; closing the view closes it.
+- Expose the queries the read model needs as the accumulator's own API (e.g. `search`, `by-id`). Page
+  handlers (step 3.3p) call these, not the underlying store.
+- If a query result depends on the user, the query takes `user-id` as an argument: there are no runtime
+  tag-bindings to do it for you.
+
+### The lifecycle component
+
+Like an automation, a persisted view is a donut.system component:
+
+```clojure
+(def component-map
+  #::ds{:start (fn [{::ds/keys [config]}]
+                 (let [{:keys [event-store {dependency}]} config]
+                   ({readmodel} event-store (new-{readmodel}-acc {dependency}))))
+
+        :stop (fn [{::ds/keys [instance]}]
+                (.close ^java.lang.AutoCloseable instance))
+
+        :config {:event-store (ds/ref [:shared :event-store])
+                 :{dependency} (ds/ref [:shared :{dependency}])}})
+```
+
+`instance` is the view handle. `ds` is `donut.system`; require it in the slice namespace.
+
+Add it to the system map under the **`:views`** group in `src/{basepackage-path}/system.clj`, keyed by the
+read model name (kebab-case keyword):
+
+```clojure
+:views
+{...
+ :{readmodel} slice.{context}.{slicename}/component-map}
+```
+
+Require the slice there as `slice.{context}.{slicename}`. If the page handler uses the view (step 3.3p) and
+the webserver's `:connector` still has `:views {}` in its `:config`, replace it with `(ds/ref [:views])` -
+a one-time change, as donut rejects a ref to an empty group, so the scaffold ships with `{}`. Every external dependency must exist under
+`:shared`; otherwise the slice is `Blocked`.
+
 ## Steps 3.2–3.4 — only for read models shown on a screen
 
 Steps 3.2 to 3.4 apply only if the readmodel is attached to a screen element, i.e. it has an **OUTBOUND**
-dependency of elementType **SCREEN** in slice.json. Otherwise the slice is just the `defview` and its tests.
+dependency of elementType **SCREEN** in slice.json. Otherwise the slice is just the view (and, for a persisted
+view, its component) and its tests.
 
 **Find the screen's commands first.** The read model's OUTBOUND SCREEN dependencies point at screens, most
 of which live in *other* slices. Look each one up by `id` in `.build-kit/.slices/{context}/*/slice.json`
@@ -412,7 +559,7 @@ A function `{slicename}-page` taking keyword arguments and returning a hiccup ve
   - in `src/{basepackage-path}/slices/{context}/{slicename}/scion.cljs`: a `(defmethod graft/scion "{scion-name}" [opts container] ...)`;
   - in `src/{basepackage-path}/scions.cljs`: require the scion namespace, or it is never compiled to JavaScript.
 
-## Step 3.3 - Page handler Pedestal interceptor
+## Step 3.3 - Page handler Pedestal interceptor (`defview`)
 
 A Pedestal interceptor map named `{slicename}-page-handler` that queries the views and responds with the page.
 
@@ -447,6 +594,29 @@ A Pedestal interceptor map named `{slicename}-page-handler` that queries the vie
   below). It returns `nil` while that slice isn't built yet, so the page can be built first.
 - **Flash errors** are read from `[:request :flash :errors/{commandname}]` — the key the change handler of
   the command's slice writes them under.
+
+## Step 3.3p - Page handler for a persisted view
+
+The running views are in the request context under `:views`, put there by `interceptors/views-interceptor`
+(already in the connector). The handler derefs the view and queries the accumulator through its own API:
+
+```clojure
+(def {slicename}-page-handler
+  {:name ::{slicename}-page-handler
+   :enter (fn [ctx]
+            (let [acc @(get-in ctx [:views :{readmodel}])
+                  user-id (get-in ctx [:request :session :user-id])
+                  query (get-in ctx [:request :query-params])]
+              (respond-with ctx 200 ({slicename}-page
+                                     :csrf-token (get-in ctx [:request ::csrf/anti-forgery-token])
+                                     :graft (get-in ctx [:request :grafter])
+                                     :{readmodel-data} ({accumulator-query-fn} acc ...)))))})
+```
+
+- Everything else (command URLs, flash errors, 404 on unparsable path ids) is as in step 3.3. There are no
+  tag bindings, and the `event-store` isn't used.
+- `@view` rethrows the view's failure, if any. Don't catch it: a failed view is a server error.
+- The view is eventually consistent: it may lag a little behind the latest appended events.
 
 ## Step 3.4 - Routes
 
@@ -515,7 +685,8 @@ The same rules are in the `build-state-change` skill; keep the two in sync.
 
 ## Step 3.5 - Tests
 
-Ledjer ships with an in-memory event-store to be used for testing.
+Ledjer ships with an in-memory event-store to be used for testing. For a persisted view, see step 3.5p
+instead of the `gwt` example below.
 
 Write Given-When-Then scenarios as plain clojure.test `testing` s-expressions under the same `deftest` expression.
 
@@ -543,12 +714,42 @@ Create events using the event constructor functions in `src/{basepackage-path}/s
 
 Only the views are tested; the page function, page handler and routes are not.
 
+## Step 3.5p - Tests for a persisted view
+
+A persisted view has no `when`: test it with Given-Then, `l/gt`, which starts the view on an in-memory
+event-store, appends the `given` events, waits until the view has committed them, and then calls the `then`
+predicate with the accumulator.
+
+```clojure
+(deftest {readmodel}
+  (testing "test 1"
+    (l/gt
+     :view #'slice/{readmodel}
+     :acc (slice/new-{readmodel}-acc ...)
+     :given [(ev/event-1 {...})]
+     :then (fn [acc]
+             (= {expected} ({accumulator-query-fn} acc ...))))))
+```
+
+- `:view` is the var of the view (note `#'`).
+- `:acc` is a **fresh** accumulator, created per `testing` - never shared between tests. It is the same kind of
+  accumulator as in production, and the view closes it when done. If the production store is external (a
+  database), use an in-memory or temporary instance of it for tests; invoke `/request-feedback` if there is none.
+- `:then` is a **predicate** of the accumulator. It must return truthy; query through the accumulator's API.
+  The test fails if it doesn't. Test one thing per `testing`, so failures are specific.
+- `:timeout-ms` (default 1000) and `:opts` (view options) are optional.
+- A failing reducer or commit makes `gt` throw (`ex-data` has `:phase`).
+
+Same rules as above: events from `events.clj`, no commands from other slices, only the view is tested.
+
 ## Quality gate
 
 Before marking this slice as `Done`, verify the implementation against slice.json:
 
-- [ ] Every field in the read model / query result definition in slice.json has a field in the output of the `defview` — no invented fields
-- [ ] Every INBOUND event of the read model has a reducer in its `defview` — no events missed or assumed
+- [ ] Every field in the read model / query result definition in slice.json has a field in the output of the `defview` (or in what the persisted accumulator can return) — no invented fields
+- [ ] Every INBOUND event of the read model has a reducer in its `defview` / `defpersistedview` — no events missed or assumed
+- [ ] `defpersistedview` is used only when step 3.0 calls for it
+- [ ] A persisted view: reducers only call `p/-tx-append` (no IO), is tested with `l/gt` and a fresh `:acc` per test, and its `component-map` is registered under `:views` in `system.clj`
 - [ ] Every GWT scenario in `specifications[]` has a corresponding test method
 - [ ] No extra query parameters or filter logic were added beyond what slice.json defines
 - [ ] No field names were assumed or guessed — if a field is not in slice.json, it is not in the code

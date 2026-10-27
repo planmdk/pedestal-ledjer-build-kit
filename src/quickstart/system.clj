@@ -50,6 +50,12 @@
     :automations
     {}
 
+    ;; Slices with persisted views add their `component-map` here, keyed by
+    ;; the view's name, e.g.
+    ;; {:product-search slice.catalog.product-search/component-map}
+    :views
+    {}
+
     :webserver
     {:routes #::ds{:start (fn [_]
                             ;; Slices add their `routes` to this union (and
@@ -64,7 +70,7 @@
 
      :connector #::ds{:start (fn [{:keys [::ds/config]}]
                                (let [{:keys [port dev-mode]} (get-in config [:app-config :webserver :service-map])
-                                     {:keys [event-store grafter routes]} config]
+                                     {:keys [event-store grafter routes views]} config]
                                  (-> (connector/default-connector-map port)
                                      (cond-> dev-mode
                                        (connector/with-interceptors connector-dev/dev-interceptors))
@@ -90,6 +96,7 @@
                                         (middlewares/file-info)
                                         (interceptors/event-store-interceptor event-store)
                                         (interceptors/grafter-interceptor grafter)
+                                        (interceptors/views-interceptor views)
                                         pedestal-interceptors/html-body
                                         interceptors/hiccup-interceptor])
                                      (connector/with-routes routes))))
@@ -98,7 +105,11 @@
                       :config {:app-config (ds/ref [:shared :app-config])
                                :event-store (ds/ref [:shared :event-store])
                                :grafter (ds/ref [:webserver :grafter])
-                               :routes (ds/ref [:webserver :routes])}}
+                               :routes (ds/ref [:webserver :routes])
+                               ;; donut rejects a ref to an empty group. When
+                               ;; adding the first persisted view, replace {}
+                               ;; with (ds/ref [:views]).
+                               :views {}}}
 
      :pedestal #::ds{:start (fn [{:keys [::ds/config]}]
                               (-> (:connector config)

@@ -1,7 +1,8 @@
 # Pedestal + Ledjer starter
 
 A minimal Clojure project for event-sourced web applications: [Pedestal](https://pedestal.io/) for HTTP,
-[ledjer](https://github.com/planmdk/ledjer) for events, views and automations, donut.system for wiring, and
+[ledjer](https://github.com/planmdk/ledjer) for events, views (including persisted views) and automations,
+donut.system for wiring, and
 [shadow-graft](https://github.com/thheller/shadow-graft) scions for client-side behaviour. It is ready for the
 `build-state-change`, `build-state-view` and `build-automation` skills in `.claude/skills/` to generate slices
 into.
@@ -58,13 +59,13 @@ clojure -M -e "(require 'quickstart.system)"             # the system loads, wit
 
 ```
 src/quickstart/
-├── system.clj              donut.system: config, event store, automations, routes, connector and server
+├── system.clj              donut.system: config, event store, automations, persisted views, routes, connector and server
 ├── main.clj                entry point for `clojure -X:run`
 ├── scions.cljs             requires every slice's scion; provides `reinitialize-scions`
 ├── common/
 │   ├── coercion.clj        the project's time zone and the transformer for request values
 │   ├── event_store.clj     the event store component
-│   ├── interceptors.clj    layout, session user checks, event store and grafter on the request
+│   ├── interceptors.clj    layout, session user checks, event store, grafter and persisted views on the request
 │   ├── grafter.clj         shadow-graft component, so pages can embed scions
 │   ├── scion_utils.cljs    helpers for scions
 │   └── utils.clj           url-for-safe, ->uuid and the routing table they depend on
@@ -105,6 +106,22 @@ marked yet.
 `public/js/idiomorph.min.js` is a minified build of [Idiomorph](https://github.com/bigskysoftware/idiomorph)
 copied from another project. Replace it with a release of your choice.
 
+## Persisted views
+
+A normal view (`defview`) reduces its events again on every query. For a view that processes a lot of events,
+or needs advanced querying such as search, the `build-state-view` skill uses ledjer's `defpersistedview`
+instead. It keeps a **persisted accumulator** up to date from a subscription; the page handler derefs the
+view and queries the accumulator through its own API.
+
+- Ledjer promotes no particular accumulator: the slice implements `PersistedAccumulator` for whatever store
+  fits (a database, a search index, ...), and you add that store's dependency to `deps.edn` and its
+  connection to `:shared` in `system.clj`.
+- A persisted view has a lifecycle, like an automation: its slice's `component-map` goes under `:views` in
+  `system.clj`, and `views-interceptor` puts the running views on the request as `:views`.
+- Donut rejects a ref to an empty group, so the connector's `:config` starts with `:views {}`. Replace it with
+  `(ds/ref [:views])` when you add the first persisted view (the skill does this).
+- Persisted views are tested with ledjer's `gt` and a fresh accumulator per test.
+
 ## Events are stored in memory
 
 `common/event_store.clj` builds ledjer's in-memory store. Events are lost when the process stops, which suits
@@ -131,7 +148,8 @@ The agent runtime in `.build-kit/` reads slices from the board and builds them w
 - builds it in `src/quickstart/slices/{context}/{slicename}/slice.clj`, with its test, and adds its events to
   `slices/events.clj`;
 - adds the slice to `system.clj` (its namespace in the `:require`, its `routes` in the `set/union`, or an
-  automation's `component-map` under `:automations`) and its scion to `scions.cljs`;
+  automation's `component-map` under `:automations`, or a persisted view's under `:views`) and its scion to
+  `scions.cljs`;
 - runs the slice's tests, checks that the system loads, and runs the full suite.
 
 Everything the skills assume exists is in `common/`. Slices do not change it.

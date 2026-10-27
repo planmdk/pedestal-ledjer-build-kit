@@ -2,7 +2,7 @@
          "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
         io.github.planmdk/ledjer {:git/url "https://github.com/planmdk/ledjer"
-                                  :git/sha "d5eec597e235bf970e225a8e4c997339079ed769"
+                                  :git/sha "1328d6885089e0493676b84721c0a6e21f4f3d95"
                                   :deps/root "core"}
         io.pedestal/pedestal.jetty {:mvn/version "0.8.1"}
         io.github.escherize/huff {:mvn/version "0.2.21"}

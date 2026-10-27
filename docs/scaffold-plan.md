@@ -11,7 +11,7 @@ repository describes what was actually done.
 |---------------------------------------------------------------------------|----------------------------------------------------|
 | This build kit                                                            | `~/Projekter/em-studio/build-kits/pedestal-ledjer` |
 | Reference project the kit is modelled on                                  | `~/Projekter/gastronak`                            |
-| Event sourcing library (`defevent`, `defview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer`                               |
+| Event sourcing library (`defevent`, `defview`, `defpersistedview`, `automation`, `gwt`, `gt`) | `~/Projekter/ledjer`          |
 | Sibling kit with a working scaffold, for shape only (Java/Spring)         | `~/Projekter/em-studio/build-kits/umadb`           |
 
 A build kit is installed into a project by the eventmodelers CLI. It consists of:
@@ -50,13 +50,15 @@ namespace prefix (see decision D1).
    `src/{basepackage-path}/system.clj`.
 2. **`system.clj`** in the shape the skills edit (gastronak's `src/dk/planm/gastronak/system.clj`):
    - a donut.system `base-system` with `[:shared :app-config]`, `[:shared :event-store]`, an
-     `:automations` group (empty map), and `[:webserver :routes]` whose start fn builds routes from a
+     `:automations` group (empty map), a `:views` group for persisted views (empty map, see D6), and
+     `[:webserver :routes]` whose start fn builds routes from a
      `(set/union ...)` of slice `routes` — slices add themselves to both the require list and the union;
    - `[:webserver :routes]` must call `utils/register-routing-table` (start) and
      `utils/clear-routing-table` (stop) — `url-for-safe` depends on it;
    - the connector's interceptor chain: session (cookie attrs), flash, content-type, query-params,
      body-params, `csrf/anti-forgery`, secure headers, not-modified, `file "public/"`, file-info,
-     `event-store-interceptor`, `grafter-interceptor` (if D3), `html-body`, `hiccup-interceptor`;
+     `event-store-interceptor`, `grafter-interceptor` (if D3), `views-interceptor` (D6), `html-body`,
+     `hiccup-interceptor`;
    - named systems `:base`, `:dev`, `:prod`.
 3. **`slices/events.clj`** — empty apart from the malli registry setup (gastronak's first lines):
    `(mr/set-default-registry! (mr/composite-registry (m/default-schemas) (met/schemas)))`.
@@ -66,8 +68,8 @@ namespace prefix (see decision D1).
    namespace. Its contract is in `build-state-change`, "The project's coercion namespace":
    `zone`, `transformer`, `instant->local-date-time`. Decide the zone (D4).
 5. **`common/interceptors.clj`** — `event-store-interceptor`, `hiccup-interceptor` (wraps hiccup bodies
-   in the page layout), `authenticated-interceptor`, `authorized-interceptor` (see D2), and
-   `grafter-interceptor` if D3.
+   in the page layout), `authenticated-interceptor`, `authorized-interceptor` (see D2),
+   `grafter-interceptor` if D3, and `views-interceptor` (D6).
 6. **`common/utils.clj`** — only `url-for-safe`, `->uuid`, `register-routing-table`,
    `clear-routing-table` and the `url-for` var they maintain. Gastronak's file also has Danish number
    and date formatters and week helpers; leave those out.
@@ -163,6 +165,25 @@ the in-memory store. No `ledjer-umadb`, `umadb-java-client` or `deed-core` in `d
 `docker-compose.yml`, and `config.edn` has no UmaDB host/port. `event_store.clj` builds the in-memory
 store; the README says how to add `ledjer-umadb` (same sha, `:deps/root "umadb"`) for persistence. Items
 7–9 and the proposed-files table above are amended accordingly.
+
+**D6. Persisted views.** Ledjer gained `defpersistedview`: a view backed by a subscription, with no runtime
+tag-bindings and a lifecycle like an automation. It is for views that process many events or need advanced
+querying (e.g. search). `build-state-view` now covers both kinds (step 3.0 chooses; `defview` is the
+default). Consequences for the scaffold:
+
+- ledjer in `deps.edn` is at `1328d68` (`defpersistedview` and `gt` for views arrived in `5f9e345` and
+  `2f8ab42`; the previous sha `d5eec59` predates them).
+- `system.clj` has a `:views` group (empty), like `:automations`; a persisted view's `component-map` goes
+  there, and `.close`s the view on stop.
+- Handlers need the running views, so `views-interceptor` puts the `:views` map on the context, and the
+  connector gets it through its `:config`. Donut rejects `(ds/ref [:views])` while the group is empty
+  (checked against donut.system 1.0.258), so the scaffold ships with `:views {}` there and the skill swaps it
+  for the ref when the first persisted view is built.
+- The scaffold ships no accumulator: ledjer promotes none, and the store is application-specific. The skill
+  tells the agent to ask for feedback rather than invent a dependency.
+
+Not exercised yet: a persisted view built into the scaffold end to end (the `:views` ref swap, the
+component stop, the page handler).
 
 **D1. Decision (agreed):** `quickstart`. Checked the eventmodelers CLI (v1.0.148): `templates/root/` is
 copied verbatim with no substitution, and `docs/` at the kit root is not copied into projects.

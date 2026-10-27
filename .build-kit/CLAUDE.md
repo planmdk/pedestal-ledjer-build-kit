@@ -32,7 +32,7 @@ below it: slice `add-item` in context `understanding-eventsourcing` is namespace
 
 1. Each slice should be self-contained and focused on a specific domain
 2. Maintain clear separation of concerns within each slice
-3. Use the library `ledjer` to implement read models (`defview`), automations (`automation`), and GWT's (`gt` and `gwt`) - see each build skill's own reference to that infrastructure
+3. Use the library `ledjer` to implement read models (`defview`, or `defpersistedview` where the build skill calls for it), automations (`automation`), and GWT's (`gt` and `gwt`) - see each build skill's own reference to that infrastructure
 
 Slice names are kebab-cased and all lowercase characters, e.g. "Add item" becomes "add-item".
 
@@ -81,7 +81,7 @@ When asked to build a slice, always follow this flow:
 
 ```
 src/{basepackage-path}/
-├── system.clj                               ← add slice's main namespace to the require; add slice's `routes` to the `set/union`, or an automation's `component-map` under `:automations`
+├── system.clj                               ← add slice's main namespace to the require; add slice's `routes` to the `set/union`, or an automation's `component-map` under `:automations`, or a persisted view's under `:views`
 ├── scions.cljs                              ← add slice's scion namespace to the require
 ├── common/
 │   ├── coercion.clj                         ← project code, never changed by a slice (see "Coercion and dates")

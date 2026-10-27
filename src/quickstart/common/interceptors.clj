@@ -21,6 +21,16 @@
     :enter (fn [ctx]
              (assoc ctx :event-store event-store))}))
 
+(defn views-interceptor
+  "Makes the running persisted views available to handlers as a map of
+  view name to view under :views in the context. Deref a view to get at
+  its accumulator."
+  [views]
+  (interceptor/interceptor
+   {:name ::views
+    :enter (fn [ctx]
+             (assoc ctx :views views))}))
+
 (defn- build-page
   [h]
   (h/page [:html {:lang "en"}
