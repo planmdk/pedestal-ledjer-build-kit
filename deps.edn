@@ -1,9 +1,9 @@
 {:paths ["src"
          "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
-        io.github.planmdk/ledjer {:git/url "https://github.com/planmdk/ledjer"
-                                  :git/sha "1328d6885089e0493676b84721c0a6e21f4f3d95"
-                                  :deps/root "core"}
+        dk.planm/ledjer {:git/url "https://github.com/planmdk/ledjer"
+                         :git/sha "ab1c4bf1a1db7f5f9836d53cac583f1c45bfef30"
+                         :deps/root "core"}
         io.pedestal/pedestal.jetty {:mvn/version "0.8.1"}
         io.github.escherize/huff {:mvn/version "0.2.21"}
         metosin/malli {:mvn/version "0.20.0"}

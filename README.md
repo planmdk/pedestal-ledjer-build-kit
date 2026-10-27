@@ -130,9 +130,9 @@ development and tests but not production. To persist them, use ledjer's UmaDB st
 1. In `deps.edn`, add ledjer's `umadb` sub-project next to `core`, at the same sha:
 
    ```clojure
-   io.github.planmdk/ledjer-umadb {:git/url "https://github.com/planmdk/ledjer"
-                                   :git/sha "<the same sha as io.github.planmdk/ledjer>"
-                                   :deps/root "umadb"}
+   dk.planm/ledjer-umadb {:git/url "https://github.com/planmdk/ledjer"
+                          :git/sha "<the same sha as dk.planm/ledjer>"
+                          :deps/root "umadb"}
    ```
 
 2. Run an [UmaDB](https://umadb.io/) server and put its host and port in `resources/config.edn`.
